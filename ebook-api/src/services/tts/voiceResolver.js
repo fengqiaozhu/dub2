@@ -20,9 +20,12 @@ function isActive(status) {
 
 function resolveBinding(binding, options = {}) {
   const provider = binding.provider || binding.preferred_provider || 'mosi';
-  const providerVoiceId = binding.provider_voice_id || (
+  const rawProviderVoiceId = binding.provider_voice_id || (
     binding.voice_id && !String(binding.voice_id).startsWith('profile:') ? binding.voice_id : null
   );
+  const providerVoiceId = rawProviderVoiceId && !String(rawProviderVoiceId).startsWith('profile:')
+    ? rawProviderVoiceId
+    : null;
 
   if (providerVoiceId) {
     const providerVoice = providerVoiceRepository.findByProviderVoiceId(provider, providerVoiceId);

@@ -2,13 +2,22 @@ const SqliteChapterRepository = require('../../repositories/sqlite/SqliteChapter
 const SqliteDialogueRepository = require('../../repositories/sqlite/SqliteDialogueRepository');
 const SqliteChapterCharacterRepository = require('../../repositories/sqlite/SqliteChapterCharacterRepository');
 const SqliteCharacterVoiceBindingRepository = require('../../repositories/sqlite/SqliteCharacterVoiceBindingRepository');
+const SqliteChapterAudioSkipRangeRepository = require('../../repositories/sqlite/SqliteChapterAudioSkipRangeRepository');
 const { resolveBinding } = require('./voiceResolver');
-const { computeDialogueAudioHash, buildNarratorRanges } = require('../chapterAudioState');
+const {
+  computeDialogueAudioHash,
+  buildNarratorRanges,
+  isAudioSkipped,
+  normalizeDialogueContent,
+  hasSpeakableContent
+} = require('../chapterAudioState');
+const providerRegistry = require('./providerRegistry');
 
 const chapterRepository = new SqliteChapterRepository();
 const dialogueRepository = new SqliteDialogueRepository();
 const chapterCharacterRepository = new SqliteChapterCharacterRepository();
 const characterVoiceBindingRepository = new SqliteCharacterVoiceBindingRepository();
+const chapterAudioSkipRangeRepository = new SqliteChapterAudioSkipRangeRepository();
 
 function createEmptyProviderSummary(provider) {
   return {
@@ -44,11 +53,62 @@ function buildProviderSummary(tasks) {
   return Array.from(grouped.values());
 }
 
-function getDubbingRoles(chapterId) {
+function mergeTaskIntent(baseIntent, dialogue) {
+  const emotion = String(dialogue.emotion || '').trim();
+  if (!emotion) return baseIntent;
+
+  return {
+    ...(baseIntent || {}),
+    performance: {
+      ...(baseIntent?.performance || {}),
+      emotion
+    }
+  };
+}
+
+function buildEmotionWarnings(tasks) {
+  const grouped = new Map();
+
+  for (const task of tasks) {
+    if (!task.intent?.performance?.emotion) continue;
+
+    const provider = providerRegistry.get(task.provider);
+    const capabilities = provider.getCapabilities();
+    const modelId = task.model || capabilities.defaultModel;
+    const model = capabilities.models.find((item) => item.id === modelId) || capabilities.models[0];
+    if (model?.capabilities?.emotionControl && model.capabilities.emotionControl !== 'none') continue;
+
+    if (!grouped.has(task.provider)) {
+      grouped.set(task.provider, {
+        provider: task.provider,
+        dialogue_count: 0,
+        roles: new Set()
+      });
+    }
+    const warning = grouped.get(task.provider);
+    warning.dialogue_count += 1;
+    warning.roles.add(task.characterName);
+  }
+
+  return Array.from(grouped.values()).map((warning) => ({
+    provider: warning.provider,
+    type: 'emotion_unsupported',
+    dialogue_count: warning.dialogue_count,
+    roles: Array.from(warning.roles),
+    message: `${warning.provider}：本章 ${warning.dialogue_count} 句包含 emotion，但该平台不支持情绪控制，配音时将忽略。`
+  }));
+}
+
+function getDubbingRoles(chapterId, skipRanges = []) {
   const roles = new Set(['旁白']);
   const dialogues = dialogueRepository.findByChapterId(chapterId);
   for (const dialogue of dialogues) {
-    if (dialogue.character_name && dialogue.content && dialogue.source !== 'narrator') {
+    if (
+      dialogue.character_name &&
+      hasSpeakableContent(dialogue) &&
+      dialogue.source !== 'narrator' &&
+      !isAudioSkipped(dialogue, skipRanges)
+    ) {
       roles.add(dialogue.character_name);
     }
   }
@@ -73,16 +133,18 @@ function createPlan(chapterId, options = {}) {
   }
 
   const storedDialogues = dialogueRepository.findByChapterId(chapterId);
+  const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
   const hasNarratorRows = storedDialogues.some((dialogue) => dialogue.source === 'narrator');
   const dialogues = (hasNarratorRows ? storedDialogues : storedDialogues.concat(buildNarratorDialogues(chapter, storedDialogues)))
     .filter((dialogue) => (
-      dialogue.content &&
+      hasSpeakableContent(dialogue) &&
       dialogue.character_name &&
-      (dialogue.source === 'narrator' || dialogue.char_start >= 0)
+      (dialogue.source === 'narrator' || dialogue.char_start >= 0) &&
+      !isAudioSkipped(dialogue, skipRanges)
     ));
   const bindings = characterVoiceBindingRepository.findByBookId(chapter.book_id);
   const bindingMap = new Map(bindings.map((binding) => [binding.character_name, binding]));
-  const roles = getDubbingRoles(chapterId);
+  const roles = getDubbingRoles(chapterId, skipRanges);
 
   const rolePlans = roles.map((characterName) => {
     const binding = bindingMap.get(characterName);
@@ -135,16 +197,18 @@ function createPlan(chapterId, options = {}) {
       continue;
     }
 
+    const intent = mergeTaskIntent(rolePlan.intent, dialogue);
+    const text = normalizeDialogueContent(dialogue.content);
     const task = {
       dialogueId: dialogue.id,
       characterName: dialogue.character_name,
-      text: dialogue.content,
+      text,
       provider: rolePlan.route.provider,
       voiceId: rolePlan.route.provider_voice_id,
       providerVoiceId: rolePlan.route.provider_voice_id,
       voiceProfileId: rolePlan.route.voice_profile_id,
       model: rolePlan.route.model,
-      intent: rolePlan.intent,
+      intent,
       orderIndex: dialogue.segment_index ?? dialogue.order_index,
       charStart: dialogue.char_start
     };
@@ -166,6 +230,7 @@ function createPlan(chapterId, options = {}) {
     tasks,
     blocked_dialogues: blockedDialogues,
     provider_summary: buildProviderSummary(tasks),
+    warnings: buildEmotionWarnings(tasks),
     stats: {
       roles_total: rolePlans.length,
       roles_ready: rolePlans.length - blockingRoles.length,

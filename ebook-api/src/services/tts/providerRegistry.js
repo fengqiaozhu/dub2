@@ -1,9 +1,13 @@
 const mosiProvider = require('./providers/mosiProvider');
+const fishAudioProvider = require('./providers/fishAudioProvider');
+const fishAudioSelfHostedProvider = require('./providers/fishAudioSelfHostedProvider');
 
 class ProviderRegistry {
   constructor() {
     this.providers = new Map();
     this.register(mosiProvider);
+    this.register(fishAudioProvider);
+    this.register(fishAudioSelfHostedProvider);
   }
 
   register(provider) {

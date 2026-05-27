@@ -150,6 +150,19 @@ class SQLiteDatabase {
         UNIQUE (provider, provider_voice_id)
       );
 
+      CREATE TABLE IF NOT EXISTS voice_favorites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        favorite_key TEXT NOT NULL UNIQUE,
+        provider TEXT,
+        provider_voice_id TEXT,
+        voice_source TEXT NOT NULL DEFAULT 'clone',
+        voice_profile_id INTEGER,
+        name_snapshot TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (voice_profile_id) REFERENCES voice_profiles (id) ON DELETE SET NULL
+      );
+
       CREATE TABLE IF NOT EXISTS chapter_audio_exports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chapter_id INTEGER NOT NULL,
@@ -160,6 +173,17 @@ class SQLiteDatabase {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (chapter_id) REFERENCES chapters (id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS chapter_audio_skip_ranges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chapter_id INTEGER NOT NULL,
+        char_start INTEGER NOT NULL,
+        char_end INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (chapter_id) REFERENCES chapters (id) ON DELETE CASCADE,
+        UNIQUE (chapter_id, char_start, char_end)
       );
     `);
 
@@ -207,6 +231,10 @@ class SQLiteDatabase {
       SET provider = COALESCE(provider, 'mosi'),
           provider_voice_id = COALESCE(provider_voice_id, voice_id)
       WHERE provider_voice_id IS NULL OR provider IS NULL;
+
+      UPDATE character_voice_bindings
+      SET provider_voice_id = NULL
+      WHERE provider_voice_id LIKE 'profile:%';
     `);
   }
 

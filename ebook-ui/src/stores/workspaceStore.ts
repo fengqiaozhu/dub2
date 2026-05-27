@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import request from '@/api/request';
+import { fetchTtsVoicePage } from '@/api/voices';
 
 type LeftTab = 'chapters' | 'voices';
 
@@ -401,12 +402,22 @@ export const useWorkspaceStore = defineStore('workspace', {
     async fetchVoices() {
       if (this.voicesLoaded) return;
       try {
-        const [sysRes, customRes] = await Promise.all([
-          request.get('/tts/voices', { params: { provider: 'mosi', kind: 'system' } }),
-          request.get('/tts/voices', { params: { provider: 'mosi', kind: 'clone' } }),
-        ]);
-        if (sysRes.data?.voices) this.systemVoices = sysRes.data.voices;
-        if (customRes.data?.voices) this.customVoices = customRes.data.voices;
+        const providersRes = await request.get('/tts/providers');
+        const providers = providersRes.data?.length
+          ? providersRes.data.map((provider: any) => provider.provider).filter(Boolean)
+          : ['mosi'];
+        const results = await Promise.all(providers.flatMap((provider: string) => ([
+          fetchTtsVoicePage({ provider, kind: 'system' }).then((page) => page.voices).catch(() => []),
+          fetchTtsVoicePage({ provider, kind: 'clone' }).then((page) => page.voices).catch(() => []),
+        ])));
+        this.systemVoices = [];
+        this.customVoices = [];
+        providers.forEach((provider: string, index: number) => {
+          const systemVoices = results[index * 2] || [];
+          const customVoices = results[index * 2 + 1] || [];
+          this.systemVoices.push(...systemVoices.map((voice: any) => ({ ...voice, provider: voice.provider || provider })));
+          this.customVoices.push(...customVoices.map((voice: any) => ({ ...voice, provider: voice.provider || provider })));
+        });
         this.voicesLoaded = true;
       } catch (err) {
         console.error('Failed to fetch voices:', err);
@@ -461,7 +472,9 @@ export const useWorkspaceStore = defineStore('workspace', {
             bindings[b.character_name] = {
               voice_id: b.provider_voice_id || b.voice_id,
               provider: b.provider || 'mosi',
-              provider_voice_id: b.provider_voice_id || b.voice_id,
+              provider_voice_id: b.provider_voice_id && !String(b.provider_voice_id).startsWith('profile:')
+                ? b.provider_voice_id
+                : null,
               voice_source: b.voice_source,
               voice_profile_id: b.voice_profile_id,
               tts_model: b.tts_model,
@@ -492,13 +505,16 @@ export const useWorkspaceStore = defineStore('workspace', {
       const context = this.ensureContext(id);
       const provider = binding.provider || 'mosi';
       const voiceId = binding.provider_voice_id || binding.voice_id || (binding.voice_profile_id ? `profile:${binding.voice_profile_id}` : '');
+      const providerVoiceId = binding.provider_voice_id && !String(binding.provider_voice_id).startsWith('profile:')
+        ? binding.provider_voice_id
+        : null;
       try {
         await request.put(
           `/books/${id}/voice-bindings/${encodeURIComponent(characterName)}`,
           {
             voice_id: voiceId,
             provider,
-            provider_voice_id: binding.provider_voice_id || null,
+            provider_voice_id: providerVoiceId,
             voice_source: binding.voice_source || 'clone',
             voice_profile_id: binding.voice_profile_id || null,
             tts_model: binding.tts_model || null,
@@ -509,7 +525,7 @@ export const useWorkspaceStore = defineStore('workspace', {
         context.voiceBindings[characterName] = {
           voice_id: voiceId,
           provider,
-          provider_voice_id: binding.provider_voice_id || voiceId || undefined,
+          provider_voice_id: providerVoiceId || undefined,
           voice_source: binding.voice_source || 'clone',
           voice_profile_id: binding.voice_profile_id || null,
           tts_model: binding.tts_model || null,
@@ -522,7 +538,7 @@ export const useWorkspaceStore = defineStore('workspace', {
         if (char) {
           char.voice_id = voiceId;
           char.provider = provider;
-          char.provider_voice_id = binding.provider_voice_id || voiceId || null;
+          char.provider_voice_id = providerVoiceId;
           char.voice_source = binding.voice_source || 'clone';
           char.voice_profile_id = binding.voice_profile_id || null;
           char.binding_mode = binding.voice_profile_id ? 'voice_profile' : 'provider_voice';

@@ -1,5 +1,15 @@
 const mosiService = require('../../mosiService');
 
+function proxyMediaUrl(url) {
+  if (!url || !String(url).startsWith('http')) return url;
+  return `/api/tts/media-proxy?url=${encodeURIComponent(url)}`;
+}
+
+function hasUsableVoiceName(name) {
+  const normalized = String(name || '').trim();
+  return normalized && normalized !== '未命名';
+}
+
 function normalizeSystemVoice(voice) {
   return {
     id: voice.voiceId,
@@ -8,18 +18,24 @@ function normalizeSystemVoice(voice) {
     name: voice.voiceName,
     source: 'system',
     raw: voice,
-    previewAudioUrl: voice.previewAudioUrl,
+    previewAudioUrl: proxyMediaUrl(voice.previewAudioUrl || voice.audioSampleUrl),
     language: voice.language,
     gender: voice.gender
   };
 }
 
 function normalizeCustomVoice(voice) {
+  const providerVoiceId = voice.voice_id || voice.voiceId || voice.id;
+  const providerVoice = providerVoiceId
+    ? require('../../../repositories').providerVoiceRepository.findByProviderVoiceId('mosi', providerVoiceId)
+    : null;
   return {
-    id: voice.voice_id,
+    id: providerVoiceId,
     provider: 'mosi',
-    provider_voice_id: voice.voice_id,
-    name: voice.name || voice.voiceName || '未命名',
+    provider_voice_id: providerVoiceId,
+    voice_profile_id: providerVoice?.voice_profile_id || null,
+    name: providerVoice?.voice_profile_name || voice.name || voice.voiceName || voice.voice_name || `Voice ${providerVoiceId}`,
+    voice_profile_name: providerVoice?.voice_profile_name,
     source: 'clone',
     raw: voice,
     status: voice.status
@@ -65,13 +81,20 @@ class MosiProvider {
   async listVoices({ kind = 'all', limit = 50, offset = 0, status } = {}) {
     if (kind === 'system') {
       const result = await mosiService.getSystemVoices(limit, offset);
-      const voices = (result.voices || []).map(normalizeSystemVoice);
+      const voices = (result.voices || [])
+        .filter((voice) => voice.voiceId && hasUsableVoiceName(voice.voiceName))
+        .map(normalizeSystemVoice);
       return { ...result, provider: this.id, kind, voices };
     }
 
     if (kind === 'clone' || kind === 'custom') {
       const result = await mosiService.getVoices(limit, offset, status);
-      const voices = (result.voices || []).map(normalizeCustomVoice);
+      const voices = (result.voices || [])
+        .filter((voice) => (
+          (voice.voice_id || voice.voiceId || voice.id) &&
+          hasUsableVoiceName(voice.name || voice.voiceName || voice.voice_name)
+        ))
+        .map(normalizeCustomVoice);
       return { ...result, provider: this.id, kind: 'clone', voices };
     }
 
@@ -91,8 +114,8 @@ class MosiProvider {
     };
   }
 
-  async cloneVoice({ filePath, text = '', onProgress }) {
-    return mosiService.uploadAndCloneVoice(filePath, text, onProgress);
+  async cloneVoice({ filePath, text = '', fileName, onProgress }) {
+    return mosiService.uploadAndCloneVoice(filePath, text, onProgress, fileName);
   }
 
   async synthesize({ text, voiceId, options = {} }) {

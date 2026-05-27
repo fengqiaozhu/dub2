@@ -24,6 +24,7 @@ router.get('/:id/characters', characterController.getBookCharacters);
 
 // Voice Bindings
 router.get('/:id/voice-bindings', characterController.getVoiceBindings);
+router.get('/:id/voice-usage', characterController.getVoiceUsage);
 router.put('/:bookId/voice-bindings/:character', characterController.upsertVoiceBinding);
 router.delete('/:bookId/voice-bindings/:character', characterController.deleteVoiceBinding);
 

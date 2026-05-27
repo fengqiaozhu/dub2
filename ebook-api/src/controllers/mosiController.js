@@ -16,7 +16,7 @@ class MosiController {
         'tts_clone', 
         null, // No specific target id
         'ttsCreateVoiceJob.js',
-        { provider: 'mosi', filePath, text }
+        { provider: 'mosi', filePath, fileName: req.file.originalname, text }
       );
 
       res.status(202).json({

@@ -7,6 +7,10 @@ function buildControlReport() {
   };
 }
 
+function formatEmotionPrompt(emotion) {
+  return typeof emotion === 'string' ? emotion : JSON.stringify(emotion);
+}
+
 function planForProvider(provider, request) {
   const capabilities = provider.getCapabilities();
   const modelId = request.model || capabilities.defaultModel;
@@ -35,19 +39,24 @@ function planForProvider(provider, request) {
     if (modelCapabilities.emotionControl === 'native') {
       providerOptions.emotion = performance.emotion;
       report.applied.push('emotion');
-    } else if (modelCapabilities.emotionControl === 'prompt' && performance.stylePrompt) {
-      providerOptions.stylePrompt = `${performance.stylePrompt}; emotion=${JSON.stringify(performance.emotion)}`;
-      report.approximated.push('emotion');
+    } else if (modelCapabilities.emotionControl === 'prompt') {
+      const emotionPrompt = formatEmotionPrompt(performance.emotion);
+      providerOptions.stylePrompt = performance.stylePrompt
+        ? `${performance.stylePrompt}; ${emotionPrompt}`
+        : emotionPrompt;
+      report.applied.push('emotion');
+      if (performance.stylePrompt) report.applied.push('stylePrompt');
     } else {
       report.ignored.push('emotion');
+      report.warnings.push(`${provider.id} 不支持情绪控制，已忽略 emotion`);
     }
   }
 
   if (performance.stylePrompt) {
-    if (modelCapabilities.stylePrompt) {
+    if (modelCapabilities.stylePrompt && !providerOptions.stylePrompt) {
       providerOptions.stylePrompt = performance.stylePrompt;
       report.applied.push('stylePrompt');
-    } else if (!report.approximated.includes('emotion')) {
+    } else if (!modelCapabilities.stylePrompt && !report.applied.includes('emotion')) {
       report.ignored.push('stylePrompt');
     }
   }

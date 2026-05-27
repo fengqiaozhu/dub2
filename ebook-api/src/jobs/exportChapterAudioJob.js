@@ -7,6 +7,7 @@ const ffmpegPath = require('ffmpeg-static');
 const SqliteChapterRepository = require('../repositories/sqlite/SqliteChapterRepository');
 const SqliteDialogueRepository = require('../repositories/sqlite/SqliteDialogueRepository');
 const SqliteChapterAudioExportRepository = require('../repositories/sqlite/SqliteChapterAudioExportRepository');
+const SqliteChapterAudioSkipRangeRepository = require('../repositories/sqlite/SqliteChapterAudioSkipRangeRepository');
 const {
   publicDir,
   buildChapterAudioItems,
@@ -18,6 +19,7 @@ const dubbingPlanner = require('../services/tts/dubbingPlanner');
 const chapterRepository = new SqliteChapterRepository();
 const dialogueRepository = new SqliteDialogueRepository();
 const chapterAudioExportRepository = new SqliteChapterAudioExportRepository();
+const chapterAudioSkipRangeRepository = new SqliteChapterAudioSkipRangeRepository();
 
 const { jobId, jobName, params } = workerData;
 const { chapterId } = params;
@@ -56,10 +58,11 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
     parentPort.postMessage({ type: 'PROGRESS', jobId, value: 10 });
 
     const dialogues = dialogueRepository.findByChapterId(chapterId);
+    const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
     const plan = dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
     const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
     const currentIds = new Set(
-      buildChapterAudioItems(chapter, dialogues, taskMap)
+      buildChapterAudioItems(chapter, dialogues, taskMap, skipRanges)
         .filter((item) => item.audio_status === 'current')
         .map((item) => String(item.id))
     );

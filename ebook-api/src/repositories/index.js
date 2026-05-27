@@ -6,8 +6,10 @@ const SqliteDialogueRepository = require('./sqlite/SqliteDialogueRepository');
 const SqliteBookCharacterRepository = require('./sqlite/SqliteBookCharacterRepository');
 const SqliteCharacterVoiceBindingRepository = require('./sqlite/SqliteCharacterVoiceBindingRepository');
 const SqliteChapterAudioExportRepository = require('./sqlite/SqliteChapterAudioExportRepository');
+const SqliteChapterAudioSkipRangeRepository = require('./sqlite/SqliteChapterAudioSkipRangeRepository');
 const SqliteVoiceProfileRepository = require('./sqlite/SqliteVoiceProfileRepository');
 const SqliteProviderVoiceRepository = require('./sqlite/SqliteProviderVoiceRepository');
+const SqliteVoiceFavoriteRepository = require('./sqlite/SqliteVoiceFavoriteRepository');
 
 // Future proofing: If we change DB, we just change the instantiation here
 // based on env variables (e.g. process.env.DB_TYPE === 'mongodb')
@@ -21,8 +23,10 @@ const repositories = {
   bookCharacterRepository: new SqliteBookCharacterRepository(),
   characterVoiceBindingRepository: new SqliteCharacterVoiceBindingRepository(),
   chapterAudioExportRepository: new SqliteChapterAudioExportRepository(),
+  chapterAudioSkipRangeRepository: new SqliteChapterAudioSkipRangeRepository(),
   voiceProfileRepository: new SqliteVoiceProfileRepository(),
   providerVoiceRepository: new SqliteProviderVoiceRepository(),
+  voiceFavoriteRepository: new SqliteVoiceFavoriteRepository(),
 };
 
 module.exports = repositories;

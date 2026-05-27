@@ -39,9 +39,24 @@ class SqliteProviderVoiceRepository {
   }
 
   findByProviderVoiceId(provider, providerVoiceId) {
+    return this.db.prepare(`
+      SELECT
+        pv.*,
+        vp.name AS voice_profile_name,
+        vp.sample_audio_url,
+        vp.sample_text,
+        vp.language AS profile_language,
+        vp.consent_status
+      FROM provider_voices pv
+      LEFT JOIN voice_profiles vp ON vp.id = pv.voice_profile_id
+      WHERE pv.provider = ? AND pv.provider_voice_id = ?
+    `).get(provider, providerVoiceId);
+  }
+
+  findByProfileId(voiceProfileId) {
     return this.db.prepare(
-      'SELECT * FROM provider_voices WHERE provider = ? AND provider_voice_id = ?'
-    ).get(provider, providerVoiceId);
+      'SELECT * FROM provider_voices WHERE voice_profile_id = ?'
+    ).all(voiceProfileId);
   }
 
   findActiveByProfileId(voiceProfileId, provider) {

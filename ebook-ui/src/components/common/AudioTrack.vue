@@ -7,6 +7,7 @@ const props = defineProps<{
   active?: boolean;
   filename?: string;
   showDownload?: boolean;
+  lazy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -146,20 +147,38 @@ const toggle = () => {
 };
 
 watch(() => props.src, () => {
-  createWaveSurfer();
+  if (props.lazy && !props.active) {
+    destroyWaveSurfer();
+    resetState();
+    isLoading.value = false;
+  } else {
+    createWaveSurfer();
+  }
 });
 
 watch(() => props.active, (val) => {
-  if (!wavesurfer) return;
   if (val) {
-    playFromStart();
+    if (!wavesurfer) {
+      createWaveSurfer();
+    } else {
+      playFromStart();
+    }
   } else {
-    stopAndReset();
+    if (wavesurfer) {
+      stopAndReset();
+    }
+    if (props.lazy) {
+      destroyWaveSurfer();
+      resetState();
+      isLoading.value = false;
+    }
   }
 });
 
 onMounted(() => {
-  createWaveSurfer();
+  if (!props.lazy) {
+    createWaveSurfer();
+  }
 });
 
 onBeforeUnmount(() => {
@@ -170,22 +189,13 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="audio-track"
-    :class="{ 'is-playing': active, 'no-src': !src, 'has-error': hasError }"
+    :class="{
+      'is-playing': active,
+      'no-src': !src,
+      'has-error': hasError,
+      'is-lazy': lazy
+    }"
   >
-    <button class="play-btn" :disabled="!src || hasError" @click="toggle">
-      <svg v-if="isLoading" class="spinner" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
-        <circle cx="12" cy="12" r="9" stroke-opacity="0.25"/>
-        <path d="M12 3a9 9 0 0 1 9 9" stroke-linecap="round"/>
-      </svg>
-      <svg v-else-if="active" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-        <rect x="6" y="4" width="4" height="16"/>
-        <rect x="14" y="4" width="4" height="16"/>
-      </svg>
-      <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-        <polygon points="5 3 19 12 5 21 5 3"/>
-      </svg>
-    </button>
-
     <div class="track-body">
       <div ref="waveRef" class="waveform" />
       <div v-if="!src" class="track-placeholder mono-text">NO AUDIO</div>
@@ -201,6 +211,20 @@ onBeforeUnmount(() => {
         <line x1="12" y1="15" x2="12" y2="3"/>
       </svg>
     </a>
+
+    <button class="play-btn" :disabled="!src || hasError" @click="toggle">
+      <svg v-if="isLoading" class="spinner" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="12" cy="12" r="9" stroke-opacity="0.25"/>
+        <path d="M12 3a9 9 0 0 1 9 9" stroke-linecap="round"/>
+      </svg>
+      <svg v-else-if="active" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+        <rect x="6" y="4" width="4" height="16"/>
+        <rect x="14" y="4" width="4" height="16"/>
+      </svg>
+      <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+    </button>
   </div>
 </template>
 
@@ -213,13 +237,20 @@ onBeforeUnmount(() => {
   background-color: var(--bg-input, #1a1f2e);
   border: 1px solid var(--border-color, #2a3040);
   border-radius: var(--radius-sm, 4px);
-  transition: border-color 0.2s;
+  transition: all 0.2s ease;
   min-width: 0;
 }
 
 .audio-track.is-playing { border-color: rgba(0, 212, 170, 0.35); }
 .audio-track.no-src { opacity: 0.45; pointer-events: none; }
 .audio-track.has-error { border-color: rgba(239, 68, 68, 0.35); }
+
+/* 懒加载组件未激活时的特殊折叠样式 */
+.audio-track.is-lazy:not(.is-playing) {
+  background: transparent;
+  border-color: transparent;
+  padding: 4px 6px;
+}
 
 .play-btn {
   flex-shrink: 0;
@@ -236,10 +267,40 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+/* 懒加载折叠按钮的悬浮特效 */
+.audio-track.is-lazy:not(.is-playing) .play-btn {
+  border-color: rgba(0, 212, 170, 0.3);
+  color: var(--accent-cyan, #00d4aa);
+  position: relative;
+  width: 28px;
+  height: 28px;
+}
+
+.audio-track.is-lazy:not(.is-playing) .play-btn::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 212, 170, 0.15);
+  animation: lazy-pulse 2.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes lazy-pulse {
+  0%, 100% { opacity: 0; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
 .play-btn:hover:not(:disabled) {
   border-color: var(--accent-cyan, #00d4aa);
   color: var(--accent-cyan, #00d4aa);
   background: rgba(0, 212, 170, 0.08);
+}
+
+.audio-track.is-lazy:not(.is-playing) .play-btn:hover:not(:disabled) {
+  transform: scale(1.1);
+  background: rgba(0, 212, 170, 0.15);
+  box-shadow: 0 0 12px rgba(0, 212, 170, 0.2);
 }
 
 .audio-track.is-playing .play-btn {

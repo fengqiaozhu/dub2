@@ -7,7 +7,8 @@ const {
   chapterRepository,
   chapterCharacterRepository,
   dialogueRepository,
-  chapterAudioExportRepository
+  chapterAudioExportRepository,
+  chapterAudioSkipRangeRepository
 } = require('../repositories');
 const annotationService = require('../services/annotationService');
 const jobManager = require('../services/jobManager');
@@ -19,6 +20,23 @@ const {
   computeChapterAudioHash
 } = require('../services/chapterAudioState');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
+const { createStorySourcePackage } = require('../services/storySourcePackageService');
+
+const rangeOverlaps = (aStart, aEnd, bStart, bEnd) => (
+  Number(aStart) < Number(bEnd) && Number(bStart) < Number(aEnd)
+);
+
+const validateSkipRange = (chapter, payload) => {
+  const charStart = Number(payload.char_start);
+  const charEnd = Number(payload.char_end);
+  if (!Number.isInteger(charStart) || !Number.isInteger(charEnd)) {
+    throw new Error('char_start and char_end must be integers');
+  }
+  if (charStart < 0 || charEnd <= charStart || charEnd > String(chapter.content || '').length) {
+    throw new Error('Invalid skip range');
+  }
+  return { charStart, charEnd };
+};
 
 const createZipArchive = (options) => {
   if (typeof archiver === 'function') {
@@ -48,12 +66,21 @@ class ChapterController {
         }
       }
       const refreshedDialogues = dialogueRepository.findByChapterId(id);
+      const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(id);
 
       for (const character of characters) {
         character.dialogues = dialogueRepository.findByChapterCharacterId(character.id);
       }
       chapter.characters = characters;
-      chapter.paragraphs = annotationService.buildParagraphs(chapter.content || '');
+      chapter.paragraphs = annotationService.buildParagraphs(chapter.content || '').map((paragraph) => ({
+        ...paragraph,
+        skip_audio: skipRanges.some((range) => rangeOverlaps(
+          paragraph.char_start,
+          paragraph.char_end,
+          range.char_start,
+          range.char_end
+        ))
+      }));
       chapter.annotations = refreshedDialogues.filter((dialogue) => (
         dialogue.source !== 'narrator' && dialogue.char_start >= 0 && dialogue.char_end > dialogue.char_start
       ));
@@ -71,18 +98,22 @@ class ChapterController {
         console.warn(`[ChapterController] Failed to build audio state for chapter ${id}:`, planError.message);
       }
       const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
-      chapter.audio_items = buildChapterAudioItems(chapter, refreshedDialogues, taskMap);
+      chapter.audio_items = buildChapterAudioItems(chapter, refreshedDialogues, taskMap, skipRanges);
 
       const totalAudioTargets = chapter.audio_items.length;
       const completedAudioTargets = chapter.audio_items.filter((item) => item.audio_status === 'current').length;
-      const pendingAudioTargets = chapter.audio_items.filter((item) => item.audio_status !== 'current').length;
+      const skippedAudioTargets = chapter.audio_items.filter((item) => item.audio_status === 'skipped').length;
+      const pendingAudioTargets = chapter.audio_items.filter((item) => (
+        item.audio_status !== 'current' && item.audio_status !== 'skipped'
+      )).length;
       chapter.dubbing_stats = {
         total: totalAudioTargets,
         completed: completedAudioTargets,
         pending: pendingAudioTargets,
         missing: chapter.audio_items.filter((item) => item.audio_status === 'missing').length,
         stale: chapter.audio_items.filter((item) => item.audio_status === 'stale').length,
-        failed: chapter.audio_items.filter((item) => item.audio_status === 'failed').length
+        failed: chapter.audio_items.filter((item) => item.audio_status === 'failed').length,
+        skipped: skippedAudioTargets
       };
 
       const currentDialogueIds = new Set(chapter.audio_items.filter((item) => item.audio_status === 'current').map((item) => String(item.id)));
@@ -129,6 +160,7 @@ class ChapterController {
         if (updates.content !== undefined) {
           dialogueRepository.deleteByChapterId(id);
           chapterCharacterRepository.deleteByChapterId(id);
+          chapterAudioSkipRangeRepository.deleteByChapterId(id);
         }
         chapterAudioExportRepository.deleteByChapterId(id);
         res.json({ message: 'Chapter updated successfully' });
@@ -228,6 +260,35 @@ class ChapterController {
     }
   }
 
+  updateAudioSkipRange(req, res) {
+    try {
+      const chapterId = parseInt(req.params.id, 10);
+      const chapter = chapterRepository.findById(chapterId);
+      if (!chapter) {
+        return res.status(404).json({ error: 'Chapter not found' });
+      }
+      const { charStart, charEnd } = validateSkipRange(chapter, req.body || {});
+      const skipAudio = req.body?.skip_audio === true;
+
+      if (skipAudio) {
+        chapterAudioSkipRangeRepository.upsert(chapterId, charStart, charEnd);
+      } else {
+        chapterAudioSkipRangeRepository.deleteRange(chapterId, charStart, charEnd);
+      }
+      chapterAudioExportRepository.deleteByChapterId(chapterId);
+      res.json({
+        message: skipAudio ? 'Audio skip range saved' : 'Audio skip range removed',
+        data: { chapter_id: chapterId, char_start: charStart, char_end: charEnd, skip_audio: skipAudio }
+      });
+    } catch (error) {
+      const status = [
+        'char_start and char_end must be integers',
+        'Invalid skip range'
+      ].includes(error.message) ? 400 : 500;
+      res.status(status).json({ error: error.message });
+    }
+  }
+
   async batchDub(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
@@ -247,13 +308,21 @@ class ChapterController {
 
       // 2. Fetch current range annotations and rebuild narrator gaps from source text.
       const currentDialogues = dialogueRepository.findByChapterId(chapterId);
+      const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
       // Ensure "旁白" character exists
       const narratorCharId = chapterCharacterRepository.upsert(chapterId, chapter.book_id, '旁白');
 
       // 3. Compute narrator gaps
       const hasNarratorRows = currentDialogues.some((dialogue) => dialogue.source === 'narrator');
       const baseDialogues = currentDialogues.filter(d => d.source !== 'narrator');
-      const narratorDialogues = hasNarratorRows ? [] : buildNarratorRanges(chapter, baseDialogues).map((dialogue) => ({
+      const narratorDialogues = hasNarratorRows ? [] : buildNarratorRanges(chapter, baseDialogues)
+        .filter((dialogue) => !skipRanges.some((range) => rangeOverlaps(
+          dialogue.char_start,
+          dialogue.char_end,
+          range.char_start,
+          range.char_end
+        )))
+        .map((dialogue) => ({
         chapter_character_id: narratorCharId,
         chapter_id: chapterId,
         content: dialogue.content,
@@ -303,6 +372,23 @@ class ChapterController {
     }
   }
 
+  exportStorySourcePackage(req, res) {
+    try {
+      const chapterId = parseInt(req.params.id, 10);
+      const storyPackage = createStorySourcePackage(chapterId);
+      const filename = `chapter-${chapterId}-story-source-package.json`;
+
+      res.attachment(filename);
+      res.type('json');
+      res.send(JSON.stringify(storyPackage, null, 2));
+    } catch (error) {
+      if (error.message === 'Chapter not found') {
+        return res.status(404).json({ error: error.message });
+      }
+      res.status(500).json({ error: error.message });
+    }
+  }
+
   exportAudioArchive(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
@@ -313,6 +399,7 @@ class ChapterController {
 
       const book = bookRepository.findById(chapter.book_id);
       const storedDialogues = dialogueRepository.findByChapterId(chapterId);
+      const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
       let plan = { tasks: [] };
       try {
         plan = dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
@@ -321,7 +408,7 @@ class ChapterController {
       }
       const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
       const currentIds = new Set(
-        buildChapterAudioItems(chapter, storedDialogues, taskMap)
+        buildChapterAudioItems(chapter, storedDialogues, taskMap, skipRanges)
           .filter((item) => item.audio_status === 'current')
           .map((item) => String(item.id))
       );

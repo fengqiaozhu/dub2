@@ -136,6 +136,7 @@ const getAvatarColor = (name: string) => {
       :visible="pickerVisible"
       :title="pickerTargetRole"
       :selected-voice-id="getSelectedVoice(pickerTargetRole)"
+      :book-id="workspaceStore.activeBookId"
       @select="onVoiceSelected"
       @close="pickerVisible = false"
     />
@@ -318,9 +319,21 @@ const getAvatarColor = (name: string) => {
   font-size: 11px;
   color: var(--accent-cyan);
   font-weight: 500;
+  flex: 1 1 auto;
+  min-width: 4em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.binding-meta {
+  flex: 0 1 46%;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .change-btn {

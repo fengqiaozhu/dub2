@@ -13,7 +13,10 @@ const { jobId, jobName, params } = workerData;
     const result = await ttsService.cloneVoice({
       provider: params.provider || 'mosi',
       filePath: params.filePath,
+      fileName: params.fileName,
       text: params.text || '',
+      name: params.name,
+      description: params.description,
       voice_profile_id: params.voice_profile_id,
       onProgress: (progress) => {
         parentPort.postMessage({ type: 'PROGRESS', jobId, value: progress });
@@ -32,7 +35,7 @@ const { jobId, jobName, params } = workerData;
       });
     }
 
-    if (fs.existsSync(params.filePath)) {
+    if (params.cleanupFile !== false && fs.existsSync(params.filePath)) {
       fs.unlinkSync(params.filePath);
     }
 
@@ -45,7 +48,7 @@ const { jobId, jobName, params } = workerData;
 
     parentPort.postMessage('done');
   } catch (error) {
-    if (params.filePath && fs.existsSync(params.filePath)) {
+    if (params.cleanupFile !== false && params.filePath && fs.existsSync(params.filePath)) {
       fs.unlinkSync(params.filePath);
     }
 

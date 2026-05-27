@@ -157,6 +157,13 @@ const formatDubbingPlanDetails = (preview: any) => {
     });
   }
 
+  if (Array.isArray(preview?.warnings) && preview.warnings.length > 0) {
+    details.push('提示：');
+    preview.warnings.forEach((warning: any) => {
+      details.push(warning.message || String(warning));
+    });
+  }
+
   const blockedRoles = preview?.roles?.filter((role: any) => !role.ready) || [];
   if (blockedRoles.length > 0) {
     details.push('不可配音：');
@@ -332,10 +339,12 @@ const startDubbing = async () => {
     if (!ok) return;
   }
 
-  if (preview?.provider_summary?.length > 1) {
+  if (preview?.provider_summary?.length > 1 || preview?.warnings?.length > 0) {
     const ok = await showConfirm(
-      '确认多平台配音计划',
-      '本章将按角色绑定混合调用多个 TTS 平台生成音频。',
+      preview?.provider_summary?.length > 1 ? '确认多平台配音计划' : '确认配音计划',
+      preview?.provider_summary?.length > 1
+        ? '本章将按角色绑定混合调用多个 TTS 平台生成音频。'
+        : '本章配音计划包含需要注意的提示。',
       formatDubbingPlanDetails(preview),
       '开始配音'
     );
@@ -399,6 +408,22 @@ const downloadChapterAudioArchive = async () => {
   }
 };
 
+const downloadStorySourcePackage = async () => {
+  if (!workspaceStore.activeChapterId) return;
+  try {
+    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/story-source-package`);
+    if (!response.ok) {
+      showWarning('故事源包导出失败', await readErrorMessage(response));
+      return;
+    }
+    const blob = await response.blob();
+    downloadBlob(blob, `chapter-${workspaceStore.activeChapterId}-story-source-package.json`);
+  } catch (error) {
+    console.error('Failed to export story source package:', error);
+    showWarning('故事源包导出失败', '下载请求异常，请稍后重试。');
+  }
+};
+
 const downloadMergedChapterAudio = async () => {
   if (!mergedAudioUrl.value) return;
   try {
@@ -442,13 +467,16 @@ const exportMergedChapterAudio = async () => {
         <span class="tabs-count mono-text">{{ openBooksLabel }}</span>
       </div>
       <div class="book-tabs" v-if="workspaceStore.tabs.length > 0">
-        <button
+        <div
           v-for="tab in workspaceStore.tabs"
           :key="tab.bookId"
           class="book-tab"
           :class="{ active: tab.bookId === workspaceStore.activeBookId }"
-          type="button"
+          role="button"
+          tabindex="0"
           @click="activateWorkspaceTab(tab.bookId)"
+          @keydown.enter.prevent="activateWorkspaceTab(tab.bookId)"
+          @keydown.space.prevent="activateWorkspaceTab(tab.bookId)"
         >
           <span class="book-tab-title">{{ tab.title }}</span>
           <span class="book-tab-state" v-if="tab.dubbingJobId || tab.exportJobId">运行中</span>
@@ -461,7 +489,7 @@ const exportMergedChapterAudio = async () => {
           >
             ×
           </button>
-        </button>
+        </div>
       </div>
     </div>
 
@@ -526,6 +554,7 @@ const exportMergedChapterAudio = async () => {
     <!-- Bottom Action Bar -->
     <div class="bottom-action-bar">
       <div class="export-settings">
+        <button class="btn btn-outline" :disabled="!workspaceStore.activeChapterId" @click="downloadStorySourcePackage">导出故事源包</button>
         <button class="btn btn-outline" :disabled="!workspaceStore.activeChapterId" @click="exportChapterAudio">导出本章单句</button>
         <button class="btn btn-outline" :disabled="isExporting || !workspaceStore.activeChapterId" @click="exportMergedChapterAudio">
           {{ mergeActionLabel }}
@@ -663,11 +692,17 @@ const exportMergedChapterAudio = async () => {
   color: var(--text-secondary);
   cursor: pointer;
   flex-shrink: 0;
+  user-select: none;
 }
 
 .book-tab:hover {
   border-color: var(--border-focus);
   color: var(--text-primary);
+}
+
+.book-tab:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 .book-tab.active {
@@ -700,8 +735,14 @@ const exportMergedChapterAudio = async () => {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  border: 0;
   border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  padding: 0;
 }
 
 .book-tab-close:hover {

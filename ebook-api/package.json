@@ -22,6 +22,7 @@
     "epub2": "^3.0.2",
     "express": "^5.2.1",
     "ffmpeg-static": "^5.3.0",
+    "fish-audio": "^0.1.0",
     "form-data": "^4.0.5",
     "multer": "^2.1.1",
     "openai": "^6.36.0",

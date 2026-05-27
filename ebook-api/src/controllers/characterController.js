@@ -8,6 +8,8 @@ const {
 } = require('../repositories');
 const jobManager = require('../services/jobManager');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
+const fs = require('fs');
+const path = require('path');
 
 class CharacterController {
   // ==================== 章节角色 ====================
@@ -205,6 +207,55 @@ class CharacterController {
     }
   }
 
+  saveEditedAudio(req, res) {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const dialogue = dialogueRepository.findById(id);
+      if (!dialogue) {
+        return res.status(404).json({ error: 'Dialogue not found' });
+      }
+      if (!req.file?.buffer) {
+        return res.status(400).json({ error: 'No audio file provided' });
+      }
+
+      const duration = Number(req.body?.duration);
+      const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : null;
+      const audioDir = path.join(__dirname, '../../public/audio');
+      fs.mkdirSync(audioDir, { recursive: true });
+
+      const filename = `dialogue-${id}-edited-${Date.now()}.wav`;
+      const filePath = path.join(audioDir, filename);
+      fs.writeFileSync(filePath, req.file.buffer);
+
+      const previousUrl = dialogue.audio_url;
+      dialogueRepository.update(id, {
+        audio_url: `/audio/${filename}`,
+        audio_duration: safeDuration,
+        audio_source_hash: dialogue.audio_source_hash,
+        audio_error: null,
+        audio_status: 'current'
+      });
+      chapterAudioExportRepository.deleteByChapterId(dialogue.chapter_id);
+
+      if (previousUrl && String(previousUrl).startsWith('/audio/')) {
+        const previousPath = path.resolve(path.join(__dirname, '../../public'), String(previousUrl).replace(/^\/+/, ''));
+        if (previousPath.startsWith(audioDir) && previousPath !== filePath && fs.existsSync(previousPath)) {
+          fs.unlink(previousPath, () => {});
+        }
+      }
+
+      res.json({
+        message: 'Dialogue audio updated',
+        data: {
+          audio_url: `/audio/${filename}`,
+          audio_duration: safeDuration
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
   // ==================== 音色绑定 ====================
 
   /**
@@ -216,6 +267,16 @@ class CharacterController {
       const bookId = req.params.id;
       const bindings = characterVoiceBindingRepository.findByBookId(bookId);
       res.json({ data: bindings });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  getVoiceUsage(req, res) {
+    try {
+      const bookId = req.params.id;
+      const usage = characterVoiceBindingRepository.findVoiceUsageByBookId(bookId);
+      res.json({ data: usage });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

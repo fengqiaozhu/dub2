@@ -5,6 +5,7 @@ const {
   dialogueRepository,
   bookCharacterRepository
 } = require('../repositories');
+const { normalizeDialogueContent } = require('./chapterAudioState');
 
 class AiService {
   constructor() {
@@ -97,11 +98,11 @@ class AiService {
               }
               return {
                 ...dialogue,
-                content: dialogue.content || dialogue.text || dialogue.dialogue || dialogue.quote || '',
+                content: normalizeDialogueContent(dialogue.content || dialogue.text || dialogue.dialogue || dialogue.quote || ''),
                 emotion: dialogue.emotion || dialogue.action || dialogue.tone || ''
               };
             })
-            .filter((dialogue) => dialogue.content)
+            .filter((dialogue) => normalizeDialogueContent(dialogue.content))
         };
       })
       .filter((character) => character.role && character.dialogues.length > 0);
@@ -128,12 +129,14 @@ class AiService {
         const charEnd = d.char_index ? d.char_index[1] : -1;
         const validRange = charStart >= 0 && charEnd > charStart &&
           !usedRanges.some((range) => charStart < range.end && range.start < charEnd);
+        const content = normalizeDialogueContent(validRange ? chapter.content.slice(charStart, charEnd) : d.content);
+        if (!content) return null;
         if (validRange) usedRanges.push({ start: charStart, end: charEnd });
         return {
           chapter_character_id: chapterCharacterId,
           segment_id: null,
           chapter_id: chapter.id,
-          content: validRange ? chapter.content.slice(charStart, charEnd) : d.content,
+          content,
           emotion: d.emotion ?? '',
           char_start: validRange ? charStart : -1,
           char_end: validRange ? charEnd : -1,
@@ -142,7 +145,7 @@ class AiService {
           updated_by: 'ai',
           order_index: validRange ? charStart : idx,
         };
-      });
+      }).filter(Boolean);
       dialogueRepository.createMany(dialoguesToInsert);
     }
 
@@ -177,14 +180,14 @@ class AiService {
             //           }
             //          ]`
             content: `# Role
-你是一个极度严谨的文本分析工程师，你的任务是进行“地毯式”的信息提取，将输入文本中的人物、对白以及伴随的情绪动作完全分离。
+你是一个极度严谨的文本分析工程师，你的任务是进行“地毯式”的信息提取，将输入文本中的人物、对白以及适合配音的语音表现提示完全分离。
 
 # Rules
 1. **零遗漏原则**：你必须逐行扫描输入文本，提取出**每一句**对白。禁止任何形式的概括、省略或总结。
 2. **打断对白的拆分**：如果一句完整的对白被人物动作或神态描写打断，必须将其解析为连续的两条独立对白。
    - 示例输入：‘“你看看你这个人！”史强大声说，“我们说它不合法了吗？”’
    - 必须解析为两条 \`content\`，第一条的 emotion 提取为“大声说”。严禁合并这两句话。
-3. **情绪与动作剥离**：仔细识别对白前后的提示语（如：大声说、冷笑、犹豫地、咬牙切齿）。将其提取到 \`emotion\` 字段。如果没有，则输出空字符串 ""。
+3. **保守提取语音表现提示**：\`emotion\` 只用于 TTS 配音表现，必须短、明确、直接影响声音。只提取明确修饰“说话方式/语气/声音状态”的提示（如：低声、急促、哽咽、冷笑、大喊、颤抖、讽刺、犹豫）。禁止把动作、神态、心理、场景状态写入 \`emotion\`（如：站起身、看着窗外、脸色苍白、心里一沉、握紧拳头）。不确定时输出空字符串 ""。不要继承上一句的 emotion，也不要为了每句都有情绪而补全。
 4. **精准消除歧义**：遇到代词（如“他说”）或连续无主语对话时，必须根据上下文精确推断出对应的角色原名。角色名称严禁重复或使用代词。
 5. **标点与原文一致**：提取的 \`content\` 必须与原文一字不差，包括标点符号。
 
@@ -202,11 +205,11 @@ class AiService {
     "role": "角色名称",
     "dialogues": [
       {
-        "emotion": "提取的情绪或动作(如无则为空)",
+        "emotion": "保守提取的语音表现提示(如无则为空)",
         "content": "完整的原话1"
       },
       {
-        "emotion": "提取的情绪或动作(如无则为空)",
+        "emotion": "保守提取的语音表现提示(如无则为空)",
         "content": "完整的原话2"
       }
     ]

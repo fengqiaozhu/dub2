@@ -70,6 +70,31 @@ class SqliteCharacterVoiceBindingRepository {
     ).all(bookId);
   }
 
+  findVoiceUsageByBookId(bookId) {
+    return this.db.prepare(`
+      SELECT
+        cvb.provider,
+        cvb.provider_voice_id,
+        cvb.voice_id,
+        cvb.voice_source,
+        cvb.voice_profile_id,
+        COUNT(cvb.id) AS role_count,
+        COALESCE(SUM(bc.dialogue_count), 0) AS dialogue_count,
+        COALESCE(SUM(bc.chapter_count), 0) AS chapter_count
+      FROM character_voice_bindings cvb
+      LEFT JOIN book_characters bc
+        ON bc.book_id = cvb.book_id AND bc.character_name = cvb.character_name
+      WHERE cvb.book_id = ?
+      GROUP BY
+        cvb.provider,
+        cvb.provider_voice_id,
+        cvb.voice_id,
+        cvb.voice_source,
+        cvb.voice_profile_id
+      ORDER BY dialogue_count DESC, role_count DESC
+    `).all(bookId);
+  }
+
   /**
    * 查询单个角色的绑定
    */

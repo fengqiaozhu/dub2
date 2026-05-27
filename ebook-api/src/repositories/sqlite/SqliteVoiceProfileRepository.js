@@ -36,6 +36,11 @@ class SqliteVoiceProfileRepository {
     return this.db.prepare('SELECT * FROM voice_profiles WHERE id = ?').get(id);
   }
 
+  delete(id) {
+    const result = this.db.prepare('DELETE FROM voice_profiles WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
   findAll({ limit = 100, offset = 0, search } = {}) {
     const values = [];
     let where = '';

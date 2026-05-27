@@ -4,16 +4,18 @@ import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useJobStore } from '@/stores/jobStore';
 import request, { toMediaUrl } from '@/api/request';
 import AudioTrack from '@/components/common/AudioTrack.vue';
+import AudioEditorModal from '@/components/common/AudioEditorModal.vue';
 
 type FilterMode = 'all' | 'unknown' | 'narration' | 'dialogue';
-type AudioFilterMode = 'all' | 'problem' | 'missing' | 'stale' | 'failed' | 'current';
-type AudioStatus = 'current' | 'missing' | 'stale' | 'failed';
+type AudioFilterMode = 'all' | 'problem' | 'missing' | 'stale' | 'failed' | 'current' | 'skipped';
+type AudioStatus = 'current' | 'missing' | 'stale' | 'failed' | 'skipped';
 
 interface Paragraph {
   text: string;
   char_start: number;
   char_end: number;
   paragraph_index: number;
+  skip_audio?: boolean;
 }
 
 interface Annotation {
@@ -39,6 +41,7 @@ interface AudioItem {
   audio_url?: string | null;
   audio_duration?: number | null;
   audio_status: AudioStatus;
+  skip_audio?: boolean;
   source_hash?: string;
   error?: string | null;
 }
@@ -96,7 +99,19 @@ const errorMessage = ref('');
 const isAnalysisSubmitting = ref(false);
 const activeAudioId = ref<number | string | null>(null);
 const redubbingItemId = ref<number | string | null>(null);
+const skipUpdatingKey = ref<string | null>(null);
 const confirmReparseVisible = ref(false);
+const audioEditorItem = ref<AudioItem | null>(null);
+const audioEditorSaving = ref(false);
+const emotionEditor = ref<{ annotation: Annotation; value: string } | null>(null);
+const emotionEditorPosition = ref({ top: 0, left: 0 });
+const emotionSavingId = ref<number | null>(null);
+const commonEmotionOptions = ['低声', '平静', '急促', '大喊', '冷笑', '哽咽', '颤抖', '讽刺', '犹豫', '恐惧', '愤怒', '温柔'];
+
+const emotionEditorStyle = computed(() => ({
+  top: `${emotionEditorPosition.value.top}px`,
+  left: `${emotionEditorPosition.value.left}px`
+}));
 
 // ── 全章顺序播放 ──────────────────────────────────────────
 const seqAudio = ref<HTMLAudioElement | null>(null);
@@ -107,10 +122,12 @@ const seqCurrentTime = ref(0);
 const seqDuration = ref(0);
 const seqTotalDuration = ref(0);
 const seqTotalElapsed = ref(0);
+const seqDurationCache = ref<Record<string, number>>({});
+const seqDurationLoading = ref<Record<string, boolean>>({});
 
 const playlist = computed<AudioItem[]>(() =>
   audioItems.value
-    .filter(item => item.audio_status === 'current' && item.audio_url)
+    .filter(item => isPlayableAudioItem(item))
     .sort((a, b) => a.char_start - b.char_start)
 );
 
@@ -137,12 +154,77 @@ const seqOverallProgress = computed(() => {
   return ((seqTotalElapsed.value + seqCurrentTime.value) / seqTotalDuration.value) * 100;
 });
 
+function seqItemKey(item: AudioItem) {
+  return `${item.id}:${item.audio_url || ''}`;
+}
+
+function seqKnownDuration(item: AudioItem | undefined) {
+  if (!item) return 0;
+  const cached = seqDurationCache.value[seqItemKey(item)];
+  return cached || item.audio_duration || 0;
+}
+
+function seqEstimatedDuration() {
+  const known = playlist.value
+    .map((item) => seqKnownDuration(item))
+    .filter((duration) => duration > 0);
+  if (known.length > 0) {
+    return known.reduce((sum, duration) => sum + duration, 0) / known.length;
+  }
+  return seqDuration.value || 3;
+}
+
+function seqDurationForTimeline(item: AudioItem | undefined) {
+  return seqKnownDuration(item) || seqEstimatedDuration();
+}
+
+function recomputeSeqTimeline(index = seqCurrentIndex.value) {
+  let totalDur = 0;
+  let elapsed = 0;
+  for (let i = 0; i < playlist.value.length; i++) {
+    const dur = seqDurationForTimeline(playlist.value[i]);
+    totalDur += dur;
+    if (i < index) elapsed += dur;
+  }
+  seqTotalDuration.value = totalDur;
+  seqTotalElapsed.value = elapsed;
+}
+
+function loadSeqDuration(item: AudioItem) {
+  if (!item.audio_url) return;
+  const key = seqItemKey(item);
+  if (seqDurationCache.value[key] || seqDurationLoading.value[key]) return;
+
+  seqDurationLoading.value = { ...seqDurationLoading.value, [key]: true };
+  const probe = new Audio();
+  probe.preload = 'metadata';
+  probe.addEventListener('loadedmetadata', () => {
+    const duration = Number.isFinite(probe.duration) ? probe.duration : 0;
+    if (duration > 0) {
+      seqDurationCache.value = { ...seqDurationCache.value, [key]: duration };
+      recomputeSeqTimeline(seqCurrentIndex.value);
+    }
+    const { [key]: _done, ...rest } = seqDurationLoading.value;
+    seqDurationLoading.value = rest;
+  }, { once: true });
+  probe.addEventListener('error', () => {
+    const { [key]: _done, ...rest } = seqDurationLoading.value;
+    seqDurationLoading.value = rest;
+  }, { once: true });
+  probe.src = toMediaUrl(item.audio_url);
+}
+
+function primeSeqDurations() {
+  playlist.value.forEach(loadSeqDuration);
+}
+
 function seqPlayPause() {
   if (seqPlaying.value) {
     seqAudio.value?.pause();
     seqPlaying.value = false;
     return;
   }
+  primeSeqDurations();
   if (seqCurrentIndex.value < 0 || seqCurrentIndex.value >= playlist.value.length) {
     seqStartFrom(0);
   } else {
@@ -156,21 +238,13 @@ function seqStartFrom(index: number) {
     seqStop();
     return;
   }
-  // 计算总时长和已消耗时长
-  let totalDur = 0;
-  let elapsed = 0;
-  for (let i = 0; i < playlist.value.length; i++) {
-    const dur = playlist.value[i].audio_duration ?? 0;
-    totalDur += dur;
-    if (i < index) elapsed += dur;
-  }
-  seqTotalDuration.value = totalDur;
-  seqTotalElapsed.value = elapsed;
+  primeSeqDurations();
   seqCurrentIndex.value = index;
+  recomputeSeqTimeline(index);
   seqCurrentTime.value = 0;
-  seqDuration.value = 0;
 
   const item = playlist.value[index];
+  seqDuration.value = seqKnownDuration(item);
   seqActiveItemId.value = item.id;
 
   if (!seqAudio.value) {
@@ -193,7 +267,6 @@ function seqStartFrom(index: number) {
 
 function seqOnEnded() {
   const next = seqCurrentIndex.value + 1;
-  seqTotalElapsed.value += seqDuration.value || (playlist.value[seqCurrentIndex.value]?.audio_duration ?? 0);
   if (next < playlist.value.length) {
     seqStartFrom(next);
   } else {
@@ -206,7 +279,16 @@ function seqOnTimeUpdate() {
 }
 
 function seqOnLoadedMeta() {
-  seqDuration.value = seqAudio.value?.duration ?? 0;
+  const duration = seqAudio.value?.duration ?? 0;
+  seqDuration.value = Number.isFinite(duration) ? duration : 0;
+  const item = playlist.value[seqCurrentIndex.value];
+  if (item && seqDuration.value > 0) {
+    seqDurationCache.value = {
+      ...seqDurationCache.value,
+      [seqItemKey(item)]: seqDuration.value
+    };
+    recomputeSeqTimeline(seqCurrentIndex.value);
+  }
 }
 
 function seqStop() {
@@ -215,6 +297,7 @@ function seqStop() {
   seqCurrentIndex.value = -1;
   seqCurrentTime.value = 0;
   seqTotalElapsed.value = 0;
+  seqDuration.value = 0;
   seqActiveItemId.value = null;
 }
 
@@ -228,6 +311,7 @@ function onTrackActivate(itemId: number | string) {
 watch(() => workspaceStore.activeChapterId, () => {
   seqStop();
   workspaceStore.setHighlightedRole(null);
+  closeEmotionEditor();
   if (editMode.value) {
     editMode.value = false;
     closeEditor();
@@ -281,8 +365,10 @@ const audioStats = computed(() => ({
   missing: audioItems.value.filter(item => item.audio_status === 'missing').length,
   stale: audioItems.value.filter(item => item.audio_status === 'stale').length,
   failed: audioItems.value.filter(item => item.audio_status === 'failed').length,
-  problem: audioItems.value.filter(item => item.audio_status !== 'current').length
+  skipped: audioItems.value.filter(item => item.audio_status === 'skipped').length,
+  problem: audioItems.value.filter(item => item.audio_status !== 'current' && item.audio_status !== 'skipped').length
 }));
+const aiParseButtonLabel = computed(() => annotations.value.length > 0 ? '重新 AI 解析' : 'AI 解析');
 
 const bookRoleOptions = computed(() => {
   const roles = new Set<string>();
@@ -446,7 +532,8 @@ const paragraphViews = computed(() => {
     if (!matchesTextFilter) return false;
     if (activeAudioFilter.value === 'all') return true;
     const items = paragraph.segments.map(s => s.audioItem).filter(Boolean) as AudioItem[];
-    if (activeAudioFilter.value === 'problem') return items.some(item => item.audio_status !== 'current');
+    if (activeAudioFilter.value === 'problem') return items.some(item => item.audio_status !== 'current' && item.audio_status !== 'skipped');
+    if (activeAudioFilter.value === 'skipped') return paragraph.skip_audio || items.some(item => item.audio_status === 'skipped');
     return items.some(item => item.audio_status === activeAudioFilter.value);
   });
 });
@@ -478,14 +565,24 @@ function audioStatusLabel(status: AudioStatus) {
     current: '已完成',
     missing: '未配音',
     stale: '已过期',
-    failed: '失败'
+    failed: '失败',
+    skipped: '已跳过'
   }[status];
 }
 
 function audioIssueSummary(item: AudioItem) {
+  if (item.audio_status === 'skipped') return '此段已标记为不配音，试读和拼接会跳过';
   if (item.audio_status === 'failed') return item.error || '合成失败';
   if (item.audio_status === 'stale') return '标注、音色或参数变化后需要重新配音';
   return '还没有生成音频';
+}
+
+function isPlayableAudioItem(item: AudioItem | null | undefined) {
+  return Boolean(item?.audio_url && item.audio_status !== 'failed' && item.audio_status !== 'skipped');
+}
+
+function isStalePlayableAudio(item: AudioItem | null | undefined) {
+  return Boolean(item?.audio_url && item.audio_status === 'stale');
 }
 
 function findAnnotationByAudioItem(item: AudioItem) {
@@ -548,8 +645,54 @@ function positionEditor(rect: DOMRect) {
   editorPosition.value = { top, left };
 }
 
+function positionEmotionEditor(rect: DOMRect) {
+  const width = 300;
+  const preferredTop = rect.bottom + 8;
+  const fallbackTop = Math.max(12, rect.top - 190);
+  const top = preferredTop > window.innerHeight - 180 ? fallbackTop : preferredTop;
+  const left = Math.min(Math.max(rect.left, 12), Math.max(12, window.innerWidth - width - 12));
+  emotionEditorPosition.value = { top, left };
+}
+
+function openEmotionEditor(annotation: Annotation, event?: MouseEvent) {
+  emotionEditor.value = {
+    annotation,
+    value: annotation.emotion || ''
+  };
+  activeAnnotationId.value = annotation.id;
+  if (event?.currentTarget instanceof HTMLElement) {
+    positionEmotionEditor(event.currentTarget.getBoundingClientRect());
+  }
+}
+
+function closeEmotionEditor() {
+  const annotationId = emotionEditor.value?.annotation.id;
+  emotionEditor.value = null;
+  if (annotationId && activeAnnotationId.value === annotationId && !selectionDraft.value) {
+    activeAnnotationId.value = null;
+  }
+}
+
+async function saveInlineEmotion(value?: string) {
+  if (!emotionEditor.value) return;
+  const annotationId = emotionEditor.value.annotation.id;
+  const emotion = (value ?? emotionEditor.value.value).trim();
+  emotionSavingId.value = annotationId;
+  errorMessage.value = '';
+  try {
+    await request.put(`/annotations/${annotationId}`, { emotion });
+    closeEmotionEditor();
+    await refreshChapter();
+  } catch (error: any) {
+    errorMessage.value = error?.response?.data?.error || '情绪保存失败';
+  } finally {
+    emotionSavingId.value = null;
+  }
+}
+
 function editAnnotation(annotation: Annotation, event?: MouseEvent) {
   if (!editMode.value) return;
+  closeEmotionEditor();
   activeAnnotationId.value = annotation.id;
   selectionDraft.value = {
     char_start: annotation.char_start,
@@ -660,11 +803,67 @@ async function clearAudioItem(item: AudioItem) {
   }
 }
 
+async function toggleParagraphSkip(paragraph: Paragraph, skipAudio: boolean) {
+  if (!workspaceStore.activeChapterId) return;
+  const key = `${paragraph.char_start}-${paragraph.char_end}`;
+  skipUpdatingKey.value = key;
+  try {
+    await request.put(`/chapters/${workspaceStore.activeChapterId}/audio-skip-ranges`, {
+      char_start: paragraph.char_start,
+      char_end: paragraph.char_end,
+      skip_audio: skipAudio
+    });
+    if (skipAudio && seqPlaying.value) seqStop();
+    await refreshChapter();
+  } catch (error: any) {
+    errorMessage.value = error?.response?.data?.error || '配音跳过状态保存失败';
+  } finally {
+    skipUpdatingKey.value = null;
+  }
+}
+
+function isParagraphSkipUpdating(paragraph: Paragraph) {
+  return skipUpdatingKey.value === `${paragraph.char_start}-${paragraph.char_end}`;
+}
+
 function editAudioItem(item: AudioItem, event?: MouseEvent) {
   const annotation = findAnnotationByAudioItem(item);
   if (!annotation) return;
   if (!editMode.value) editMode.value = true;
   editAnnotation(annotation, event);
+}
+
+function openAudioEditor(item: AudioItem) {
+  if (!item.audio_url) return;
+  if (seqPlaying.value) seqStop();
+  if (activeAudioId.value === item.id) activeAudioId.value = null;
+  audioEditorItem.value = item;
+}
+
+async function saveEditedAudio(payload: { blob: Blob; duration: number }) {
+  if (!audioEditorItem.value?.dialogue_id) {
+    errorMessage.value = '旁白音频暂不支持覆盖保存';
+    return;
+  }
+  audioEditorSaving.value = true;
+  errorMessage.value = '';
+  try {
+    const form = new FormData();
+    form.append('audio', payload.blob, `dialogue-${audioEditorItem.value.dialogue_id}-edited.wav`);
+    form.append('duration', String(payload.duration));
+    await request.post(`/dialogues/${audioEditorItem.value.dialogue_id}/audio`, form);
+    const savedItemId = audioEditorItem.value.id;
+    audioEditorItem.value = null;
+    activeAudioId.value = null;
+    seqDurationCache.value = Object.fromEntries(
+      Object.entries(seqDurationCache.value).filter(([key]) => !key.startsWith(`${savedItemId}:`))
+    );
+    await refreshChapter();
+  } catch (error: any) {
+    errorMessage.value = error?.response?.data?.error || '音频保存失败';
+  } finally {
+    audioEditorSaving.value = false;
+  }
 }
 
 function startRerange() {
@@ -681,6 +880,7 @@ function closeEditor() {
   rolePickerOpen.value = false;
   bookRolesExpanded.value = false;
   errorMessage.value = '';
+  closeEmotionEditor();
 }
 
 function selectRole(role: string) {
@@ -863,8 +1063,8 @@ onMounted(() => {
         <button class="btn btn-outline btn-sm edit-toggle" :class="{ active: editMode }" @click="toggleEditMode">
           {{ editMode ? '退出编辑' : '编辑' }}
         </button>
-        <button class="btn btn-outline btn-sm" @click="startAnalysis">
-          重新 AI 解析
+        <button class="btn btn-outline btn-sm ai-parse-btn" :class="{ primary: annotations.length === 0 }" @click="startAnalysis">
+          {{ aiParseButtonLabel }}
         </button>
       </div>
     </div>
@@ -917,6 +1117,7 @@ onMounted(() => {
         <button class="audio-filter-chip missing" :class="{ active: activeAudioFilter === 'missing' }" @click="activeAudioFilter = 'missing'">未配音 <span>{{ audioStats.missing }}</span></button>
         <button class="audio-filter-chip stale" :class="{ active: activeAudioFilter === 'stale' }" @click="activeAudioFilter = 'stale'">已过期 <span>{{ audioStats.stale }}</span></button>
         <button class="audio-filter-chip failed" :class="{ active: activeAudioFilter === 'failed' }" @click="activeAudioFilter = 'failed'">失败 <span>{{ audioStats.failed }}</span></button>
+        <button class="audio-filter-chip skipped" :class="{ active: activeAudioFilter === 'skipped' }" @click="activeAudioFilter = 'skipped'">已跳过 <span>{{ audioStats.skipped }}</span></button>
         <button class="audio-filter-chip current" :class="{ active: activeAudioFilter === 'current' }" @click="activeAudioFilter = 'current'">已完成 <span>{{ audioStats.current }}</span></button>
       </div>
 
@@ -970,6 +1171,56 @@ onMounted(() => {
         <span class="editor-error" v-if="errorMessage">{{ errorMessage }}</span>
       </div>
 
+      <div
+        class="emotion-editor-popover"
+        v-if="emotionEditor"
+        :style="emotionEditorStyle"
+        @click.stop
+      >
+        <div class="emotion-editor-title">
+          <span>{{ emotionEditor.annotation.character_name }}</span>
+          <button type="button" class="emotion-editor-close" @click="closeEmotionEditor">×</button>
+        </div>
+        <div class="emotion-options">
+          <button
+            v-for="emotion in commonEmotionOptions"
+            :key="emotion"
+            type="button"
+            class="emotion-option"
+            :class="{ active: emotionEditor.value === emotion }"
+            :disabled="emotionSavingId === emotionEditor.annotation.id"
+            @click="saveInlineEmotion(emotion)"
+          >
+            {{ emotion }}
+          </button>
+        </div>
+        <div class="emotion-custom-row">
+          <input
+            class="emotion-custom-input"
+            v-model="emotionEditor.value"
+            placeholder="手动输入，如：低声"
+            @keydown.enter.prevent="saveInlineEmotion()"
+          >
+          <button
+            type="button"
+            class="emotion-save-btn"
+            :disabled="emotionSavingId === emotionEditor.annotation.id"
+            @click="saveInlineEmotion()"
+          >
+            保存
+          </button>
+          <button
+            type="button"
+            class="emotion-clear-btn"
+            :disabled="emotionSavingId === emotionEditor.annotation.id"
+            @click="saveInlineEmotion('')"
+          >
+            清空
+          </button>
+        </div>
+        <div class="emotion-editor-hint">短提示更稳，不确定就留空。</div>
+      </div>
+
       <div class="unlocated-panel" v-if="unlocatedDialogues.length > 0">
         <div class="unlocated-title">未定位 AI 结果</div>
         <div class="unlocated-item" v-for="dialogue in unlocatedDialogues" :key="dialogue.id">
@@ -978,10 +1229,22 @@ onMounted(() => {
         </div>
       </div>
 
-      <div class="source-document" :class="{ editing: editMode }" ref="contentRoot" tabindex="0" @mouseup="captureSelection">
-        <div class="paragraph-row" v-for="paragraph in paragraphViews" :key="paragraph.paragraph_index">
-          <div class="paragraph-index mono-text">{{ paragraph.paragraph_index + 1 }}</div>
+      <div class="source-document" :class="{ editing: editMode }" ref="contentRoot" tabindex="0" @mouseup="captureSelection" @click="closeEmotionEditor">
+        <div class="paragraph-row" :class="{ skipped: paragraph.skip_audio }" v-for="paragraph in paragraphViews" :key="paragraph.paragraph_index">
+          <div class="paragraph-index mono-text">
+            <span>{{ paragraph.paragraph_index + 1 }}</span>
+            <button
+              type="button"
+              class="paragraph-skip-btn"
+              :class="{ active: paragraph.skip_audio }"
+              :disabled="isParagraphSkipUpdating(paragraph)"
+              @click.stop="toggleParagraphSkip(paragraph, !paragraph.skip_audio)"
+            >
+              {{ paragraph.skip_audio ? '恢复' : '跳过' }}
+            </button>
+          </div>
           <div class="paragraph-body">
+            <div class="paragraph-skip-notice" v-if="paragraph.skip_audio">已跳过配音</div>
             <div
               class="sentence-segment"
               :class="{
@@ -1018,6 +1281,17 @@ onMounted(() => {
                       class="role-label"
                       :style="{ backgroundColor: getRoleColor(chunk.annotation.character_name) }"
                     >{{ chunk.annotation.character_name }}</span>
+                    <button
+                      v-if="chunk.annotation && isFirstChunkOfAnnotation(segment.chunks, chunk)"
+                      type="button"
+                      class="emotion-chip"
+                      :class="{ empty: !chunk.annotation.emotion, active: emotionEditor?.annotation.id === chunk.annotation.id }"
+                      :disabled="emotionSavingId === chunk.annotation.id"
+                      :title="chunk.annotation.emotion ? `情绪：${chunk.annotation.emotion}` : '设置情绪'"
+                      @click.stop="openEmotionEditor(chunk.annotation, $event)"
+                    >
+                      {{ chunk.annotation.emotion || '情绪' }}
+                    </button>
                     {{ chunk.text }}
                   </span>
                   <span v-else class="text-piece" :data-start="chunk.char_start" :data-end="chunk.char_end">{{ chunk.text }}</span>
@@ -1034,15 +1308,45 @@ onMounted(() => {
                 class="next-role-btn last"
               >已是最后一句</span>
               <template v-if="segment.audioItem">
-                <AudioTrack
-                  v-if="segment.audioItem.audio_status === 'current' && segment.audioItem.audio_url"
-                  :src="toMediaUrl(segment.audioItem.audio_url)"
-                  :active="activeAudioId === segment.audioItem.id"
-                  class="segment-audio"
-                  :class="{ 'seq-highlight': seqActiveItemId === segment.audioItem.id }"
-                  @activate="onTrackActivate(segment.audioItem.id)"
-                  @deactivate="activeAudioId = null"
-                />
+                <div v-if="isPlayableAudioItem(segment.audioItem)" class="segment-audio-block">
+                  <div class="segment-audio-row">
+                    <AudioTrack
+                      :src="toMediaUrl(segment.audioItem.audio_url!)"
+                      :active="activeAudioId === segment.audioItem.id"
+                      class="segment-audio"
+                      :class="{
+                        'seq-highlight': seqActiveItemId === segment.audioItem.id,
+                        'is-stale': isStalePlayableAudio(segment.audioItem)
+                      }"
+                      @activate="onTrackActivate(segment.audioItem.id)"
+                      @deactivate="activeAudioId = null"
+                    />
+                    <button
+                      type="button"
+                      class="audio-edit-btn"
+                      title="编辑音频"
+                      @click.stop="openAudioEditor(segment.audioItem)"
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 12h3l2-7 4 14 2-7h7"/>
+                      </svg>
+                    </button>
+                  </div>
+                  <div v-if="isStalePlayableAudio(segment.audioItem)" class="stale-audio-notice">
+                    <div class="stale-copy">
+                      <span class="issue-status">已过期</span>
+                      <span>{{ audioIssueSummary(segment.audioItem) }}</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="issue-btn primary"
+                      :disabled="redubbingItemId === segment.audioItem.id || !segment.audioItem.dialogue_id"
+                      @click="redubAudioItem(segment.audioItem)"
+                    >
+                      {{ redubbingItemId === segment.audioItem.id ? '提交中' : '重新配音' }}
+                    </button>
+                  </div>
+                </div>
                 <div
                   v-else-if="segment.audioItem.audio_status !== 'current'"
                   class="audio-issue"
@@ -1054,7 +1358,10 @@ onMounted(() => {
                     <small v-if="segment.audioItem.error">{{ segment.audioItem.error }}</small>
                     <small v-else>{{ audioIssueSummary(segment.audioItem) }}</small>
                   </div>
-                  <div class="issue-actions">
+                  <div class="issue-actions" v-if="segment.audioItem.audio_status === 'skipped'">
+                    <button type="button" class="issue-btn primary" :disabled="isParagraphSkipUpdating(paragraph)" @click="toggleParagraphSkip(paragraph, false)">恢复配音</button>
+                  </div>
+                  <div class="issue-actions" v-else>
                     <button type="button" class="issue-btn primary" :disabled="redubbingItemId === segment.audioItem.id || !segment.audioItem.dialogue_id" @click="redubAudioItem(segment.audioItem)">{{ redubbingItemId === segment.audioItem.id ? '提交中' : '重配' }}</button>
                     <button type="button" class="issue-btn" :disabled="!segment.audioItem.dialogue_id" @click="clearAudioItem(segment.audioItem)">清除</button>
                     <button type="button" class="issue-btn" :disabled="segment.audioItem.type === 'narration'" @click="editAudioItem(segment.audioItem, $event)">编辑</button>
@@ -1090,6 +1397,16 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <AudioEditorModal
+      :open="!!audioEditorItem"
+      :src="audioEditorItem?.audio_url ? toMediaUrl(audioEditorItem.audio_url) : ''"
+      :title="audioEditorItem ? `${audioEditorItem.character_name} · 音频编辑` : '音频编辑'"
+      :subtitle="audioEditorItem?.content || '切片编辑'"
+      :saving="audioEditorSaving"
+      @close="audioEditorItem = null"
+      @save="saveEditedAudio"
+    />
   </div>
 </template>
 
@@ -1108,6 +1425,9 @@ onMounted(() => {
 .btn-sm, .btn-save, .btn-ghost, .btn-danger-mini { height: 24px; padding: 0 9px; font-size: 11px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid var(--border-focus); background: transparent; color: var(--text-secondary); }
 .btn-save:hover, .btn-sm:hover, .btn-ghost:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
 .edit-toggle.active { border-color: rgba(0,212,170,.72); background: rgba(0,212,170,.14); color: var(--accent-cyan); }
+.ai-parse-btn { border-color: rgba(0,212,170,.42); color: var(--accent-cyan); background: rgba(0,212,170,.08); font-weight: 600; }
+.ai-parse-btn.primary { border-color: rgba(0,212,170,.78); background: rgba(0,212,170,.18); color: #7fffe7; box-shadow: 0 0 0 1px rgba(0,212,170,.08), 0 0 16px rgba(0,212,170,.12); }
+.ai-parse-btn:hover { border-color: var(--accent-cyan); background: rgba(0,212,170,.16); color: #b9fff2; }
 .btn-danger-mini { border-color: rgba(239, 68, 68, 0.45); color: #f87171; }
 .content-scroll { flex: 1; min-height: 0; overflow-y: auto; background: var(--bg-panel); transition: box-shadow 0.3s ease, border-color 0.3s ease; border: 1px solid transparent; margin: -1px; }
 .content-scroll.editing { box-shadow: inset 0 0 40px rgba(0, 212, 170, 0.15), inset 0 0 12px rgba(0, 212, 170, 0.1); border-color: rgba(0, 212, 170, 0.25); }
@@ -1142,9 +1462,27 @@ onMounted(() => {
 .audio-filter-chip.problem.active, .audio-filter-chip.missing.active { color: #f59e0b; border-color: rgba(245,158,11,.58); background: rgba(245,158,11,.12); }
 .audio-filter-chip.stale.active { color: #facc15; border-color: rgba(250,204,21,.55); background: rgba(250,204,21,.1); }
 .audio-filter-chip.failed.active { color: #f87171; border-color: rgba(248,113,113,.58); background: rgba(248,113,113,.12); }
+.audio-filter-chip.skipped.active { color: #94a3b8; border-color: rgba(148,163,184,.58); background: rgba(148,163,184,.12); }
 .audio-filter-chip.current.active { color: var(--accent-cyan); border-color: rgba(0,212,170,.55); background: rgba(0,212,170,.12); }
 .selection-editor { position: fixed; z-index: 900; width: min(448px, calc(100vw - 24px)); display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border: 1px solid rgba(0,212,170,.36); border-radius: var(--radius-md); background: rgba(18, 22, 25, .98); box-shadow: 0 14px 36px rgba(0,0,0,.36); }
 .selection-editor::before { content: ''; position: absolute; top: -6px; left: 18px; width: 10px; height: 10px; transform: rotate(45deg); background: rgba(18, 22, 25, .98); border-left: 1px solid rgba(0,212,170,.36); border-top: 1px solid rgba(0,212,170,.36); }
+.emotion-editor-popover { position: fixed; z-index: 920; width: min(300px, calc(100vw - 24px)); padding: 9px; border: 1px solid rgba(0,212,170,.34); border-radius: var(--radius-md); background: rgba(18, 22, 25, .98); box-shadow: 0 14px 36px rgba(0,0,0,.38); }
+.emotion-editor-popover::before { content: ''; position: absolute; top: -6px; left: 18px; width: 10px; height: 10px; transform: rotate(45deg); background: rgba(18, 22, 25, .98); border-left: 1px solid rgba(0,212,170,.34); border-top: 1px solid rgba(0,212,170,.34); }
+.emotion-editor-title { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.emotion-editor-title span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emotion-editor-close { flex-shrink: 0; width: 22px; height: 22px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); cursor: pointer; }
+.emotion-editor-close:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+.emotion-options { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.emotion-option { height: 24px; padding: 0 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.emotion-option:hover:not(:disabled), .emotion-option.active { border-color: rgba(0,212,170,.58); background: rgba(0,212,170,.11); color: var(--accent-cyan); }
+.emotion-custom-row { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; }
+.emotion-custom-input { min-width: 0; height: 26px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-base); color: var(--text-primary); padding: 0 8px; font-size: 11px; outline: none; }
+.emotion-custom-input:focus { border-color: var(--accent-cyan); }
+.emotion-save-btn, .emotion-clear-btn { height: 26px; padding: 0 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.emotion-save-btn { border-color: rgba(0,212,170,.45); color: var(--accent-cyan); }
+.emotion-clear-btn:hover:not(:disabled), .emotion-save-btn:hover:not(:disabled) { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+.emotion-option:disabled, .emotion-save-btn:disabled, .emotion-clear-btn:disabled { opacity: .5; cursor: not-allowed; }
+.emotion-editor-hint { position: relative; z-index: 1; margin-top: 7px; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
 .selected-text { max-width: 100%; flex: 1 0 100%; color: var(--text-secondary); font-size: 12px; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; z-index: 1; }
 .field { height: 24px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-base); color: var(--text-primary); padding: 0 8px; font-size: 11px; outline: none; }
 .field:focus { border-color: var(--accent-cyan); }
@@ -1171,8 +1509,15 @@ onMounted(() => {
 .source-document.editing { cursor: text; }
 .paragraph-row { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: var(--space-3); padding: 10px 14px 10px 0; border-bottom: 1px solid var(--border-color); }
 .paragraph-row:hover { background: rgba(255,255,255,.025); }
-.paragraph-index { color: var(--text-muted); font-size: 11px; padding-top: 4px; text-align: right; user-select: none; }
+.paragraph-row.skipped { background: rgba(148,163,184,.035); }
+.paragraph-row.skipped .sentence-segment { opacity: .58; }
+.paragraph-index { color: var(--text-muted); font-size: 11px; padding-top: 4px; text-align: right; user-select: none; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.paragraph-skip-btn { height: 22px; padding: 0 6px; border: 1px solid rgba(148,163,184,.28); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-size: 10px; cursor: pointer; }
+.paragraph-skip-btn:hover:not(:disabled) { border-color: rgba(148,163,184,.62); color: #cbd5e1; }
+.paragraph-skip-btn.active { border-color: rgba(148,163,184,.58); background: rgba(148,163,184,.12); color: #cbd5e1; }
+.paragraph-skip-btn:disabled { opacity: .48; cursor: not-allowed; }
 .paragraph-body { display: flex; flex-direction: column; }
+.paragraph-skip-notice { align-self: flex-start; margin-bottom: 3px; padding: 2px 7px; border: 1px solid rgba(148,163,184,.28); border-radius: var(--radius-sm); background: rgba(148,163,184,.08); color: #cbd5e1; font-size: 11px; font-weight: 600; }
 .sentence-segment { padding: 6px 0 2px; transition: background 0.2s; position: relative; }
 .sentence-segment.seq-active { background: rgba(0,212,170,.06); border-left: 2px solid var(--accent-cyan); padding-left: 10px; }
 .sentence-segment.role-pointed { background: rgba(var(--rc, 0,212,170), .06); padding-left: 10px; }
@@ -1191,17 +1536,32 @@ onMounted(() => {
 .annotation-highlight.role-highlighted { background: linear-gradient(135deg, rgba(var(--rc), .36) 0%, rgba(var(--rc), .18) 100%); outline: 1px solid rgba(var(--rc), .6); }
 .annotation-highlight.role-dimmed { opacity: 0.3; }
 .role-label { display: inline-block; padding: 0 5px; margin-right: 4px; border-radius: 3px; font-size: 10px; font-weight: 600; line-height: 18px; color: #fff; vertical-align: middle; white-space: nowrap; user-select: none; }
-.segment-audio { margin-top: 4px; margin-bottom: 2px; background: rgba(255,255,255,.03) !important; }
+.emotion-chip { display: inline-flex; align-items: center; justify-content: center; max-width: 96px; height: 18px; margin-right: 4px; padding: 0 6px; border: 1px solid rgba(var(--rc), .42); border-radius: 3px; background: rgba(18,22,25,.76); color: rgba(var(--rc), 1); font-size: 10px; font-weight: 600; line-height: 18px; vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.emotion-chip.empty { border-style: dashed; color: var(--text-muted); background: rgba(255,255,255,.035); }
+.emotion-chip.active, .emotion-chip:hover:not(:disabled) { border-color: rgba(var(--rc), .82); background: rgba(var(--rc), .16); color: var(--text-primary); }
+.emotion-chip:disabled { opacity: .55; cursor: not-allowed; }
+.segment-audio-block { margin-top: 4px; margin-bottom: 2px; }
+.segment-audio-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 6px; align-items: center; }
+.segment-audio { background: rgba(255,255,255,.03) !important; }
 .segment-audio.seq-highlight { border-color: rgba(0, 212, 170, 0.35) !important; }
+.segment-audio.is-stale { border-color: rgba(250,204,21,.28) !important; }
+.audio-edit-btn { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(0,212,170,.32); border-radius: var(--radius-sm); background: rgba(0,212,170,.06); color: var(--accent-cyan); cursor: pointer; transition: all .18s; }
+.audio-edit-btn:hover { border-color: var(--accent-cyan); background: rgba(0,212,170,.14); }
+.stale-audio-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; padding: 5px 8px; border: 1px solid rgba(250,204,21,.24); border-radius: var(--radius-sm); background: rgba(250,204,21,.06); }
+.stale-copy { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
+.stale-copy > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stale-audio-notice .issue-status { color: #fde047; }
 .audio-issue { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; margin-bottom: 2px; padding: 6px 9px; border: 1px solid rgba(245,158,11,.28); border-radius: var(--radius-sm); background: rgba(245,158,11,.07); }
 .audio-issue.stale { border-color: rgba(250,204,21,.28); background: rgba(250,204,21,.07); }
 .audio-issue.failed { border-color: rgba(248,113,113,.32); background: rgba(248,113,113,.08); }
+.audio-issue.skipped { border-color: rgba(148,163,184,.28); background: rgba(148,163,184,.07); }
 .issue-main { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
 .issue-main strong { color: var(--text-primary); flex-shrink: 0; }
 .issue-main small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-status { flex-shrink: 0; padding: 2px 6px; border-radius: var(--radius-sm); background: rgba(0,0,0,.16); color: #f8c16c; font-size: 11px; font-weight: 600; }
 .audio-issue.stale .issue-status { color: #fde047; }
 .audio-issue.failed .issue-status { color: #fca5a5; }
+.audio-issue.skipped .issue-status { color: #cbd5e1; }
 .issue-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .issue-btn { height: 24px; padding: 0 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; }
 .issue-btn.primary { border-color: rgba(0,212,170,.42); color: var(--accent-cyan); }

@@ -35,10 +35,12 @@ class MosiService {
   /**
    * Upload an audio file to Mosi to get a file_id
    */
-  async uploadFile(filePath) {
+  async uploadFile(filePath, fileName) {
     try {
       const form = new FormData();
-      form.append('file', fs.createReadStream(filePath));
+      form.append('file', fs.createReadStream(filePath), {
+        filename: fileName || path.basename(filePath)
+      });
 
       const response = await axios.post(`${this.baseUrl}/api/v1/files/upload`, form, {
         headers: {
@@ -93,10 +95,10 @@ class MosiService {
   /**
    * Complete flow: Upload -> Clone -> Wait for ACTIVE
    */
-  async uploadAndCloneVoice(filePath, text = '', onProgress = () => {}) {
+  async uploadAndCloneVoice(filePath, text = '', onProgress = () => {}, fileName) {
     console.log(`Starting voice clone process... Uploading file...`);
     onProgress(10);
-    const uploadResult = await this.uploadFile(filePath);
+    const uploadResult = await this.uploadFile(filePath, fileName);
     const fileId = uploadResult.file_id;
 
     console.log(`File uploaded successfully (ID: ${fileId}). Creating voice clone...`);

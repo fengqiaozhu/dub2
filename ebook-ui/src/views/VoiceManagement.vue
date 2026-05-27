@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import request, { toMediaUrl } from '@/api/request';
 import AudioTrack from '@/components/common/AudioTrack.vue';
+import { fetchTtsVoicePage, fetchVoiceProfilePage } from '@/api/voices';
 
 type TabId = 'assets' | 'providerVoices' | 'jobs' | 'capabilities';
 type Status = 'ACTIVE' | 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'UNKNOWN';
@@ -54,6 +55,26 @@ interface ProviderVoice {
   raw?: any;
 }
 
+interface VoiceFavorite {
+  favorite_key: string;
+  provider?: string | null;
+  provider_voice_id?: string | null;
+  voice_source: 'system' | 'clone';
+  voice_profile_id?: number | null;
+}
+
+interface ProviderStatus {
+  provider: string;
+  synthesis_available: boolean;
+  reason?: string | null;
+}
+
+interface PageState {
+  offset: number;
+  hasMore: boolean;
+  loading: boolean;
+}
+
 interface Job {
   id: string;
   job_name: string;
@@ -78,14 +99,22 @@ const query = ref('');
 const selectedProvider = ref('all');
 const selectedStatus = ref('all');
 const providers = ref<TtsProvider[]>([]);
+const providerStatuses = ref<Record<string, ProviderStatus>>({});
 const voiceProfiles = ref<VoiceProfile[]>([]);
 const platformVoices = ref<ProviderVoice[]>([]);
+const favorites = ref<VoiceFavorite[]>([]);
 const cloneJobs = ref<Job[]>([]);
 const loading = ref(false);
+const loadingMoreProfiles = ref(false);
+const loadingMoreProviderVoices = ref(false);
 const detailItem = ref<DetailItem>(null);
 const playingId = ref<string | null>(null);
+const deletingProfileId = ref<number | null>(null);
 const uploadVisible = ref(false);
 const uploadSaving = ref(false);
+const cloningProfileIds = ref<Set<number>>(new Set());
+const selectedProfileIds = ref<Set<number>>(new Set());
+const cloneTargetProvider = ref('mosi');
 const fileInput = ref<HTMLInputElement | null>(null);
 const uploadForm = ref({
   name: '',
@@ -93,14 +122,32 @@ const uploadForm = ref({
   consent_status: 'confirmed',
   description: '',
   sample_text: '',
-  cloneToMosi: true,
+  provider: 'mosi',
+  cloneToProvider: false,
   file: null as File | null,
 });
+const profilePageState = ref<PageState>({ offset: 0, hasMore: true, loading: false });
+const providerVoicePageStates = ref<Record<string, PageState>>({});
+const VOICE_PAGE_LIMIT = 60;
 
 const providerOptions = computed(() => [
   { value: 'all', label: '全部 Provider' },
   ...providers.value.map((p) => ({ value: p.provider, label: p.displayName || p.provider })),
 ]);
+
+const cloneProviderOptions = computed(() => (
+  providers.value
+    .filter((provider) => provider.models.some((model) => model.capabilities?.cloneVoice))
+    .map((provider) => ({ value: provider.provider, label: provider.displayName || provider.provider }))
+));
+
+const activeCloneProvider = computed(() => {
+  const available = cloneProviderOptions.value;
+  if (available.some((provider) => provider.value === cloneTargetProvider.value)) {
+    return cloneTargetProvider.value;
+  }
+  return available[0]?.value || 'mosi';
+});
 
 const providerSummary = computed(() => {
   const configured = providers.value.length;
@@ -110,17 +157,18 @@ const providerSummary = computed(() => {
 
 const filteredProfiles = computed(() => {
   const q = query.value.trim().toLowerCase();
-  return voiceProfiles.value.filter((profile) => {
+  const matched = voiceProfiles.value.filter((profile) => {
     if (!q) return true;
     return [profile.name, profile.sample_text, profile.language, profile.provider_statuses]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(q));
   });
+  return sortFavoritesFirst(matched, favoriteKeyForProfile);
 });
 
 const filteredProviderVoices = computed(() => {
   const q = query.value.trim().toLowerCase();
-  return platformVoices.value.filter((voice) => {
+  const matched = platformVoices.value.filter((voice) => {
     const providerMatch = selectedProvider.value === 'all' || voice.provider === selectedProvider.value;
     const statusMatch = selectedStatus.value === 'all' || normalizeStatus(voice.status) === selectedStatus.value;
     const textMatch = !q || [
@@ -134,6 +182,7 @@ const filteredProviderVoices = computed(() => {
     ].filter(Boolean).some((value) => String(value).toLowerCase().includes(q));
     return providerMatch && statusMatch && textMatch;
   });
+  return sortFavoritesFirst(matched, favoriteKeyForProviderVoice);
 });
 
 const capabilityRows = computed(() => {
@@ -197,11 +246,27 @@ const voiceName = (voice: ProviderVoice) => (
 
 const voiceAudioSrc = (voice: ProviderVoice) => {
   const src = voice.previewAudioUrl || voice.sample_audio_url || voice.raw?.previewAudioUrl || voice.raw?.audioSampleUrl || '';
-  return src.startsWith('/voice-samples') || src.startsWith('/audio') ? toMediaUrl(src) : src;
+  return src.startsWith('/') ? toMediaUrl(src) : src;
 };
 
 const profileAudioSrc = (profile: VoiceProfile) => (
   profile.sample_audio_url ? toMediaUrl(profile.sample_audio_url) : ''
+);
+
+const profileKey = (profileId: string | number) => `profile:${profileId}`;
+const providerVoiceKey = (provider: string, source: string, providerVoiceId: string) => `${provider || 'mosi'}:${source || 'clone'}:${providerVoiceId}`;
+const favoriteKeyForProfile = (profile: VoiceProfile) => profileKey(profile.id);
+const favoriteKeyForProviderVoice = (voice: ProviderVoice) => providerVoiceKey(voice.provider, voice.kind, voice.provider_voice_id);
+const favoriteKeys = computed(() => new Set(favorites.value.map((favorite) => favorite.favorite_key)));
+const isFavoriteKey = (key: string) => favoriteKeys.value.has(key);
+const providerStatusFor = (provider: string) => providerStatuses.value[provider];
+const isProviderSynthAvailable = (provider: string) => providerStatusFor(provider)?.synthesis_available !== false;
+const providerUnavailableReason = (provider: string) => providerStatusFor(provider)?.reason || '该平台当前不可配音';
+const isProfileSelected = (profile: VoiceProfile) => selectedProfileIds.value.has(profile.id);
+const isProfileCloning = (profile: VoiceProfile) => cloningProfileIds.value.has(profile.id);
+
+const sortFavoritesFirst = <T,>(items: T[], getKey: (item: T) => string) => (
+  [...items].sort((a, b) => Number(isFavoriteKey(getKey(b))) - Number(isFavoriteKey(getKey(a))))
 );
 
 const formatDate = (value?: string) => {
@@ -225,29 +290,229 @@ const mapLiveVoice = (voice: any, kind: 'system' | 'clone'): ProviderVoice => ({
   raw: voice.raw || voice,
 });
 
+const providerKindKey = (provider: string, kind: 'system' | 'clone') => `${provider}:${kind}`;
+
+const currentProviderIds = () => (
+  providers.value.length > 0
+    ? providers.value.map((provider) => provider.provider).filter(Boolean)
+    : ['mosi']
+);
+
 const fetchProviders = async () => {
-  const res: any = await request.get('/tts/providers');
+  const [res, statusRes]: any[] = await Promise.all([
+    request.get('/tts/providers'),
+    request.get('/tts/providers/status').catch(() => ({ data: [] })),
+  ]);
   providers.value = res.data || [];
+  providerStatuses.value = Object.fromEntries((statusRes.data || []).map((status: ProviderStatus) => [status.provider, status]));
 };
 
 const fetchVoiceProfiles = async () => {
+  voiceProfiles.value = [];
+  profilePageState.value = { offset: 0, hasMore: true, loading: false };
   try {
-    const res: any = await request.get('/tts/voice-profiles', { params: { limit: 100 } });
-    voiceProfiles.value = res.data || [];
+    await loadMoreVoiceProfiles();
   } catch (error) {
     console.error('Failed to fetch voice profiles:', error);
     voiceProfiles.value = [];
   }
 };
 
+const fetchFavorites = async () => {
+  try {
+    const res: any = await request.get('/tts/voice-favorites');
+    favorites.value = res.data || [];
+  } catch (error) {
+    console.error('Failed to fetch voice favorites:', error);
+    favorites.value = [];
+  }
+};
+
 const fetchPlatformVoices = async () => {
-  const [systemRes, cloneRes] = await Promise.all([
-    request.get('/tts/voices', { params: { provider: 'mosi', kind: 'system', limit: 60 } }),
-    request.get('/tts/voices', { params: { provider: 'mosi', kind: 'clone', limit: 60 } }),
-  ]);
-  const systemVoices = ((systemRes as any).data?.voices || []).map((voice: any) => mapLiveVoice(voice, 'system'));
-  const cloneVoices = ((cloneRes as any).data?.voices || []).map((voice: any) => mapLiveVoice(voice, 'clone'));
-  platformVoices.value = [...systemVoices, ...cloneVoices];
+  platformVoices.value = [];
+  providerVoicePageStates.value = {};
+  currentProviderIds().forEach((provider) => {
+    (['system', 'clone'] as const).forEach((kind) => {
+      providerVoicePageStates.value[providerKindKey(provider, kind)] = {
+        offset: 0,
+        hasMore: true,
+        loading: false,
+      };
+    });
+  });
+  await loadMoreProviderVoices();
+};
+
+const loadMoreVoiceProfiles = async () => {
+  const state = profilePageState.value;
+  if (state.loading || !state.hasMore) return;
+  state.loading = true;
+  loadingMoreProfiles.value = true;
+  try {
+    const page = await fetchVoiceProfilePage({ limit: VOICE_PAGE_LIMIT, offset: state.offset });
+    voiceProfiles.value.push(...page.profiles);
+    state.offset = page.nextOffset;
+    state.hasMore = page.hasMore;
+  } finally {
+    state.loading = false;
+    loadingMoreProfiles.value = false;
+  }
+};
+
+const loadMoreProviderVoices = async () => {
+  if (loadingMoreProviderVoices.value) return;
+  const targets = currentProviderIds().flatMap((provider) => (
+    (['system', 'clone'] as const).map((kind) => ({ provider, kind }))
+  )).filter(({ provider, kind }) => {
+    const state = providerVoicePageStates.value[providerKindKey(provider, kind)];
+    return state?.hasMore && !state.loading;
+  });
+
+  if (targets.length === 0) return;
+  loadingMoreProviderVoices.value = true;
+  try {
+    const pages = await Promise.all(targets.map(async ({ provider, kind }) => {
+      const key = providerKindKey(provider, kind);
+      const state = providerVoicePageStates.value[key];
+      state.loading = true;
+      try {
+        const page = await fetchTtsVoicePage({
+          provider,
+          kind,
+          limit: VOICE_PAGE_LIMIT,
+          offset: state.offset,
+        });
+        state.offset = page.nextOffset;
+        state.hasMore = page.hasMore;
+        return page.voices.map((voice: any) => mapLiveVoice({ ...voice, provider }, kind));
+      } catch (error) {
+        console.warn(`Failed to fetch ${provider} ${kind} voices:`, error);
+        state.hasMore = false;
+        return [];
+      } finally {
+        state.loading = false;
+      }
+    }));
+    platformVoices.value.push(...pages.flat());
+  } finally {
+    loadingMoreProviderVoices.value = false;
+  }
+};
+
+const handleDataPanelScroll = (event: Event) => {
+  const el = event.currentTarget as HTMLElement;
+  if (el.scrollTop + el.clientHeight < el.scrollHeight - 120) return;
+  if (activeTab.value === 'assets') loadMoreVoiceProfiles();
+  if (activeTab.value === 'providerVoices') loadMoreProviderVoices();
+};
+
+const toggleProfileFavorite = async (profile: VoiceProfile) => {
+  const key = favoriteKeyForProfile(profile);
+  try {
+    if (isFavoriteKey(key)) {
+      await request.delete('/tts/voice-favorites', { params: { voice_profile_id: profile.id } });
+      favorites.value = favorites.value.filter((favorite) => favorite.favorite_key !== key);
+      return;
+    }
+
+    const res: any = await request.post('/tts/voice-favorites', {
+      voice_profile_id: profile.id,
+      voice_source: 'clone',
+      name_snapshot: profile.name,
+    });
+    favorites.value = [res.data, ...favorites.value.filter((favorite) => favorite.favorite_key !== key)];
+  } catch (error) {
+    console.error('Failed to toggle voice favorite:', error);
+  }
+};
+
+const deleteProfile = async (profile: VoiceProfile) => {
+  if (deletingProfileId.value) return;
+  const confirmed = window.confirm(`删除音色资产「${profile.name}」？关联的平台音色也会一并删除。`);
+  if (!confirmed) return;
+
+  deletingProfileId.value = profile.id;
+  try {
+    await request.delete(`/tts/voice-profiles/${profile.id}`);
+    voiceProfiles.value = voiceProfiles.value.filter((item) => item.id !== profile.id);
+    platformVoices.value = platformVoices.value.filter((voice) => voice.voice_profile_id !== profile.id);
+    favorites.value = favorites.value.filter((favorite) => favorite.voice_profile_id !== profile.id);
+    if (detailItem.value?.type === 'profile' && detailItem.value.data.id === profile.id) {
+      detailItem.value = null;
+    }
+    if (detailItem.value?.type === 'providerVoice' && detailItem.value.data.voice_profile_id === profile.id) {
+      detailItem.value = null;
+    }
+    playingId.value = null;
+    await Promise.all([fetchVoiceProfiles(), fetchPlatformVoices(), fetchFavorites()]);
+  } catch (error) {
+    console.error('Failed to delete voice profile:', error);
+  } finally {
+    deletingProfileId.value = null;
+  }
+};
+
+const toggleProfileSelection = (profile: VoiceProfile) => {
+  const next = new Set(selectedProfileIds.value);
+  if (next.has(profile.id)) {
+    next.delete(profile.id);
+  } else {
+    next.add(profile.id);
+  }
+  selectedProfileIds.value = next;
+};
+
+const cloneProfileToProvider = async (profile: VoiceProfile, provider = activeCloneProvider.value) => {
+  if (!profile.sample_audio_url || isProfileCloning(profile)) return;
+  const next = new Set(cloningProfileIds.value);
+  next.add(profile.id);
+  cloningProfileIds.value = next;
+  try {
+    await request.post(`/tts/voice-profiles/${profile.id}/clone`, { provider });
+    selectedProfileIds.value = new Set([...selectedProfileIds.value].filter((id) => id !== profile.id));
+    await Promise.all([fetchVoiceProfiles(), fetchPlatformVoices(), fetchCloneJobs()]);
+    activeTab.value = 'jobs';
+  } catch (error) {
+    console.error('Failed to clone voice profile:', error);
+  } finally {
+    const done = new Set(cloningProfileIds.value);
+    done.delete(profile.id);
+    cloningProfileIds.value = done;
+  }
+};
+
+const cloneSelectedProfiles = async () => {
+  const selected = voiceProfiles.value.filter((profile) => selectedProfileIds.value.has(profile.id));
+  if (selected.length === 0) return;
+  await Promise.all(selected.map((profile) => cloneProfileToProvider(profile, activeCloneProvider.value)));
+};
+
+const toggleProviderVoiceFavorite = async (voice: ProviderVoice) => {
+  const key = favoriteKeyForProviderVoice(voice);
+  try {
+    if (isFavoriteKey(key)) {
+      await request.delete('/tts/voice-favorites', {
+        params: {
+          provider: voice.provider,
+          provider_voice_id: voice.provider_voice_id,
+          voice_source: voice.kind,
+        },
+      });
+      favorites.value = favorites.value.filter((favorite) => favorite.favorite_key !== key);
+      return;
+    }
+
+    const res: any = await request.post('/tts/voice-favorites', {
+      provider: voice.provider,
+      provider_voice_id: voice.provider_voice_id,
+      voice_source: voice.kind,
+      voice_profile_id: voice.voice_profile_id || null,
+      name_snapshot: voiceName(voice),
+    });
+    favorites.value = [res.data, ...favorites.value.filter((favorite) => favorite.favorite_key !== key)];
+  } catch (error) {
+    console.error('Failed to toggle voice favorite:', error);
+  }
 };
 
 const fetchCloneJobs = async () => {
@@ -265,6 +530,7 @@ const refreshAll = async () => {
   try {
     await fetchProviders();
     await Promise.all([
+      fetchFavorites(),
       fetchVoiceProfiles(),
       fetchPlatformVoices(),
       fetchCloneJobs(),
@@ -302,7 +568,8 @@ const closeUpload = () => {
     consent_status: 'confirmed',
     description: '',
     sample_text: '',
-    cloneToMosi: true,
+    provider: 'mosi',
+    cloneToProvider: false,
     file: null,
   };
   if (fileInput.value) fileInput.value.value = '';
@@ -320,22 +587,23 @@ const submitUpload = async () => {
   if (!uploadForm.value.file || uploadSaving.value) return;
   uploadSaving.value = true;
   try {
+    const shouldClone = uploadForm.value.cloneToProvider;
     const formData = new FormData();
     formData.append('file', uploadForm.value.file);
-    formData.append('provider', 'mosi');
     formData.append('name', uploadForm.value.name || uploadForm.value.file.name);
     formData.append('language', uploadForm.value.language);
     formData.append('consent_status', uploadForm.value.consent_status);
     formData.append('description', uploadForm.value.description);
     formData.append('text', uploadForm.value.sample_text);
-    formData.append('save_profile', 'true');
+    formData.append('provider', uploadForm.value.provider);
+    formData.append('clone', String(uploadForm.value.cloneToProvider));
 
-    await request.post('/tts/voices', formData, {
+    await request.post('/tts/voice-profiles', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
     closeUpload();
     await refreshAll();
-    activeTab.value = 'jobs';
+    activeTab.value = shouldClone ? 'jobs' : 'assets';
   } catch (error) {
     console.error('Failed to upload voice sample:', error);
   } finally {
@@ -370,7 +638,13 @@ onMounted(refreshAll);
       >
         <span class="provider-name">{{ provider.displayName || provider.provider }}</span>
         <span class="provider-meta mono-text">{{ provider.defaultModel }}</span>
-        <span class="provider-status">已配置</span>
+        <span
+          class="provider-status"
+          :class="{ unavailable: !isProviderSynthAvailable(provider.provider) }"
+          :title="providerUnavailableReason(provider.provider)"
+        >
+          {{ isProviderSynthAvailable(provider.provider) ? '可配音' : '不可配音' }}
+        </span>
       </button>
       <div v-if="providers.length === 0" class="provider-empty mono-text">暂无可用 Provider</div>
     </div>
@@ -399,28 +673,53 @@ onMounted(refreshAll);
 
     <div class="console-body">
       <main class="main-panel">
-        <section v-show="activeTab === 'assets'" class="data-panel">
+        <section v-show="activeTab === 'assets'" class="data-panel" @scroll="handleDataPanelScroll">
           <div class="panel-title-row">
             <h3>音色资产</h3>
-            <span class="panel-count mono-text">{{ filteredProfiles.length }} ITEMS</span>
+            <div class="panel-actions">
+              <select v-model="cloneTargetProvider" class="select-input compact">
+                <option v-for="provider in cloneProviderOptions" :key="provider.value" :value="provider.value">
+                  {{ provider.label }}
+                </option>
+              </select>
+              <button
+                class="btn btn-outline"
+                :disabled="selectedProfileIds.size === 0"
+                @click="cloneSelectedProfiles"
+              >
+                批量克隆
+              </button>
+              <span class="panel-count mono-text">{{ filteredProfiles.length }} ITEMS</span>
+            </div>
           </div>
           <div v-if="filteredProfiles.length === 0" class="empty-block">
             <strong>还没有自己的音色资产</strong>
             <span>上传样本音频和对应文本，之后可以克隆到不同 TTS 平台。</span>
             <button class="btn btn-primary" @click="openUpload">上传样本</button>
           </div>
-          <button
+          <div
             v-for="profile in filteredProfiles"
             v-else
             :key="profile.id"
             class="asset-row"
             :class="{ selected: detailItem?.type === 'profile' && detailItem.data.id === profile.id }"
+            role="button"
+            tabindex="0"
             @click="selectProfile(profile)"
+            @keydown.enter="selectProfile(profile)"
           >
+            <input
+              class="row-check"
+              type="checkbox"
+              :checked="isProfileSelected(profile)"
+              @click.stop
+              @change.stop="toggleProfileSelection(profile)"
+            />
             <div class="voice-avatar">{{ profile.name?.charAt(0) || 'V' }}</div>
             <div class="row-main">
               <div class="row-title">
                 <span>{{ profile.name }}</span>
+                <span v-if="isFavoriteKey(favoriteKeyForProfile(profile))" class="chip favorite-chip">收藏</span>
                 <span class="chip">{{ profile.language || '未设语言' }}</span>
                 <span class="chip" :class="{ warning: profile.consent_status !== 'confirmed' }">{{ consentLabel(profile.consent_status) }}</span>
               </div>
@@ -441,26 +740,64 @@ onMounted(refreshAll);
               </span>
               <span v-if="providerStatusChips(profile).length === 0" class="projection-chip muted">未投影</span>
             </div>
-          </button>
+            <button
+              class="btn btn-outline"
+              :disabled="!profile.sample_audio_url || isProfileCloning(profile)"
+              @click.stop="cloneProfileToProvider(profile)"
+            >
+              {{ isProfileCloning(profile) ? '克隆中' : '克隆' }}
+            </button>
+            <button
+              class="favorite-btn"
+              :class="{ active: isFavoriteKey(favoriteKeyForProfile(profile)) }"
+              :title="isFavoriteKey(favoriteKeyForProfile(profile)) ? '取消收藏' : '收藏音色'"
+              @click.stop="toggleProfileFavorite(profile)"
+            >
+              <span>{{ isFavoriteKey(favoriteKeyForProfile(profile)) ? '★' : '☆' }}</span>
+              <span>{{ isFavoriteKey(favoriteKeyForProfile(profile)) ? '已收藏' : '收藏' }}</span>
+            </button>
+            <button
+              class="icon-delete-btn"
+              :disabled="deletingProfileId === profile.id"
+              :title="deletingProfileId === profile.id ? '正在删除' : '删除音色资产'"
+              aria-label="删除音色资产"
+              @click.stop="deleteProfile(profile)"
+            >
+              <span v-if="deletingProfileId === profile.id" class="delete-spinner" />
+              <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18" />
+                <path d="M8 6V4h8v2" />
+                <path d="M19 6l-1 14H6L5 6" />
+                <path d="M10 11v5" />
+                <path d="M14 11v5" />
+              </svg>
+            </button>
+          </div>
+          <div v-if="loadingMoreProfiles" class="loading-more mono-text">加载更多…</div>
         </section>
 
-        <section v-show="activeTab === 'providerVoices'" class="data-panel">
+        <section v-show="activeTab === 'providerVoices'" class="data-panel" @scroll="handleDataPanelScroll">
           <div class="panel-title-row">
             <h3>平台音色</h3>
             <span class="panel-count mono-text">{{ filteredProviderVoices.length }} ITEMS</span>
           </div>
-          <button
+          <div
             v-for="voice in filteredProviderVoices"
             :key="String(voice.id || voice.provider_voice_id)"
             class="provider-voice-row"
             :class="{ selected: detailItem?.type === 'providerVoice' && detailItem.data.provider_voice_id === voice.provider_voice_id }"
+            role="button"
+            tabindex="0"
             @click="selectProviderVoice(voice)"
+            @keydown.enter="selectProviderVoice(voice)"
           >
             <div class="voice-avatar provider">{{ voiceName(voice).charAt(0) }}</div>
             <div class="row-main">
               <div class="row-title">
                 <span>{{ voiceName(voice) }}</span>
+                <span v-if="isFavoriteKey(favoriteKeyForProviderVoice(voice))" class="chip favorite-chip">收藏</span>
                 <span class="chip">{{ voice.provider }}</span>
+                <span v-if="!isProviderSynthAvailable(voice.provider)" class="chip unavailable-chip" :title="providerUnavailableReason(voice.provider)">不可配音</span>
                 <span class="chip">{{ voice.kind === 'system' ? '系统预置' : '克隆音色' }}</span>
                 <span class="chip" :class="statusClass(voice.status)">{{ statusLabel(voice.status) }}</span>
               </div>
@@ -470,17 +807,28 @@ onMounted(refreshAll);
                 <span>{{ voice.voice_profile_name ? `来源：${voice.voice_profile_name}` : '平台原生音色' }}</span>
               </div>
             </div>
-            <div class="row-audio" @click.stop>
+            <button
+              class="favorite-btn"
+              :class="{ active: isFavoriteKey(favoriteKeyForProviderVoice(voice)) }"
+              :title="isFavoriteKey(favoriteKeyForProviderVoice(voice)) ? '取消收藏' : '收藏音色'"
+              @click.stop="toggleProviderVoiceFavorite(voice)"
+            >
+              <span>{{ isFavoriteKey(favoriteKeyForProviderVoice(voice)) ? '★' : '☆' }}</span>
+              <span>{{ isFavoriteKey(favoriteKeyForProviderVoice(voice)) ? '已收藏' : '收藏' }}</span>
+            </button>
+            <div class="row-audio" :class="{ 'is-expanded': playingId === String(voice.id || voice.provider_voice_id) }" @click.stop>
               <AudioTrack
                 :src="voiceAudioSrc(voice)"
                 :active="playingId === String(voice.id || voice.provider_voice_id)"
                 :filename="voiceName(voice) + '.wav'"
                 :show-download="false"
+                :lazy="true"
                 @activate="togglePlay(String(voice.id || voice.provider_voice_id))"
                 @deactivate="togglePlay(String(voice.id || voice.provider_voice_id))"
               />
             </div>
-          </button>
+          </div>
+          <div v-if="loadingMoreProviderVoices" class="loading-more mono-text">加载更多…</div>
         </section>
 
         <section v-show="activeTab === 'jobs'" class="data-panel">
@@ -572,6 +920,15 @@ onMounted(refreshAll);
             <label>样本文本</label>
             <p>{{ detailItem.data.sample_text || '暂无样本文本' }}</p>
           </div>
+          <div class="detail-actions">
+            <button
+              class="btn btn-primary"
+              :disabled="!detailItem.data.sample_audio_url || isProfileCloning(detailItem.data)"
+              @click="cloneProfileToProvider(detailItem.data)"
+            >
+              {{ isProfileCloning(detailItem.data) ? '正在克隆' : `克隆到 ${activeCloneProvider}` }}
+            </button>
+          </div>
         </template>
 
         <template v-else-if="detailItem?.type === 'providerVoice'">
@@ -649,6 +1006,14 @@ onMounted(refreshAll);
               <option value="restricted">仅测试</option>
             </select>
           </label>
+          <label v-if="uploadForm.cloneToProvider">
+            克隆平台
+            <select v-model="uploadForm.provider" class="form-input">
+              <option v-for="provider in cloneProviderOptions" :key="provider.value" :value="provider.value">
+                {{ provider.label }}
+              </option>
+            </select>
+          </label>
           <label>
             样本音频
             <input ref="fileInput" class="form-input file-input" type="file" accept="audio/*" @change="onFileChange" />
@@ -663,9 +1028,9 @@ onMounted(refreshAll);
           </label>
         </div>
         <div class="modal-check">
-          <input id="cloneToMosi" v-model="uploadForm.cloneToMosi" type="checkbox" disabled />
-          <label for="cloneToMosi">保存资产并克隆到 Mosi</label>
-          <span class="mono-text">当前已接入 provider</span>
+          <input id="cloneToProvider" v-model="uploadForm.cloneToProvider" type="checkbox" />
+          <label for="cloneToProvider">上传后立即克隆到平台</label>
+          <span class="mono-text">可稍后从资产列表单条或批量克隆</span>
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="closeUpload">取消</button>
@@ -808,6 +1173,10 @@ onMounted(refreshAll);
   font-size: 11px;
 }
 
+.provider-status.unavailable {
+  color: #f87171;
+}
+
 .provider-empty {
   display: flex;
   align-items: center;
@@ -899,12 +1268,22 @@ onMounted(refreshAll);
   color: var(--text-secondary);
 }
 
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-input.compact {
+  width: 150px;
+}
+
 .asset-row,
 .provider-voice-row,
 .job-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto 82px;
   align-items: center;
   gap: 12px;
   padding: 10px;
@@ -914,10 +1293,21 @@ onMounted(refreshAll);
   background: var(--bg-input);
   color: var(--text-primary);
   text-align: left;
+  cursor: pointer;
+}
+
+.asset-row {
+  grid-template-columns: 18px 38px minmax(0, 1fr) auto 72px 82px 30px;
 }
 
 .provider-voice-row {
-  grid-template-columns: 38px minmax(0, 1fr) 220px;
+  grid-template-columns: 38px minmax(0, 1fr) 82px auto;
+}
+
+.row-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-cyan);
 }
 
 .job-row {
@@ -992,6 +1382,83 @@ onMounted(refreshAll);
   border-color: rgba(245, 158, 11, 0.35);
 }
 
+.favorite-chip {
+  color: #facc15;
+  border-color: rgba(250, 204, 21, 0.35);
+  background: rgba(250, 204, 21, 0.1);
+}
+
+.unavailable-chip {
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.favorite-btn {
+  width: 82px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  transition: all 0.18s;
+}
+
+.favorite-btn:hover,
+.favorite-btn.active {
+  color: #facc15;
+  border-color: rgba(250, 204, 21, 0.45);
+  background: rgba(250, 204, 21, 0.12);
+}
+
+.icon-delete-btn {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: #f87171;
+  transition: all 0.18s;
+  flex: 0 0 30px;
+  white-space: nowrap;
+  line-height: 1;
+  padding: 0;
+}
+
+.icon-delete-btn:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.56);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+}
+
+.icon-delete-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.delete-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(248, 113, 113, 0.3);
+  border-top-color: #f87171;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .projection-stack {
   justify-content: flex-end;
   flex-wrap: wrap;
@@ -1024,8 +1491,30 @@ onMounted(refreshAll);
 }
 
 .row-audio {
+  width: 38px; /* 默认折叠状态，刚好露出播放按钮 */
+  height: 38px;
+  display: flex;
+  justify-content: flex-end; /* 内部靠右对齐，确保折叠时展示最右侧的播放按钮 */
+  overflow: hidden; /* 核心：超出容器剪裁遮蔽 */
+  transition: width 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+
+.row-audio.is-expanded {
+  width: 220px; /* 展开状态，与锁定的 AudioTrack 宽度一致 */
+}
+
+/* 锁定列表内层 AudioTrack 的固定宽度 */
+.row-audio :deep(.audio-track) {
   width: 220px;
-  min-width: 0;
+  flex-shrink: 0;
+}
+
+.loading-more {
+  padding: 12px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .detail-panel {
@@ -1071,6 +1560,12 @@ onMounted(refreshAll);
 .detail-block {
   border-top: 1px solid var(--border-color);
   padding-top: 12px;
+}
+
+.detail-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .detail-block label {
