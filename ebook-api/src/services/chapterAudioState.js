@@ -125,7 +125,7 @@ function buildChapterAudioItems(chapter, dialogues, taskMap = new Map(), skipRan
       const skipAudio = isAudioSkipped(dialogue, skipRanges);
       return {
         id: dialogue.id,
-        dialogue_id: typeof dialogue.id === 'number' ? dialogue.id : null,
+        dialogue_id: dialogue.id && !String(dialogue.id).startsWith('narrator-') ? (isNaN(Number(dialogue.id)) ? dialogue.id : Number(dialogue.id)) : null,
         type: dialogue.source === 'narrator' ? 'narration' : 'dialogue',
         character_name: dialogue.character_name,
         content,

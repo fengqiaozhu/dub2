@@ -78,6 +78,11 @@ const dubbingAction = computed(() => {
   };
 });
 
+const pendingUpdateCount = computed(() => {
+  const stats = dubbingStats.value;
+  return (stats.stale || 0) + (stats.failed || 0) + (stats.missing || 0);
+});
+
 const mergeActionLabel = computed(() => {
   if (isExporting.value) return `拼接中 ${exportJob.value?.progress || 0}%`;
   if (mergedAudioExport.value) return '重新拼接';
@@ -615,14 +620,25 @@ const exportMergedChapterAudio = async () => {
         
         <!-- 已有成功配音部分，展示双控制按钮 -->
         <div v-else class="dub-action-group">
-          <button class="btn btn-outline btn-large" @click="startDubbing(false)" :disabled="!workspaceStore.activeChapterId">
-            更新变动/缺失
-            <span class="sub-text mono-text" style="color: rgba(255,255,255,0.7)">
-              更新 {{ dubbingStats.stale + dubbingStats.failed + dubbingStats.missing }} 句
-            </span>
+          <!-- 增量更新按钮 -->
+          <button 
+            class="btn btn-outline btn-large" 
+            @click="startDubbing(false)" 
+            :disabled="pendingUpdateCount === 0 || !workspaceStore.activeChapterId"
+          >
+            <template v-if="pendingUpdateCount === 0">
+              无需更新配音
+              <span class="sub-text mono-text" style="color: var(--text-muted)">全章已配好 / 无变动</span>
+            </template>
+            <template v-else>
+              配音变动与缺失句
+              <span class="sub-text mono-text" style="color: #00d4aa">增量生成 {{ pendingUpdateCount }} 句</span>
+            </template>
           </button>
+          
+          <!-- 全新重配按钮 -->
           <button class="btn btn-primary btn-large" @click="startDubbing(true)" :disabled="!workspaceStore.activeChapterId">
-            全新重配全章
+            重新配音全章
             <span class="sub-text mono-text">覆盖重配 {{ dubbingStats.total }} 句</span>
           </button>
         </div>
