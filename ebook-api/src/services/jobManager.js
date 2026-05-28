@@ -48,35 +48,13 @@ class JobManager {
   }
 
   async start() {
-    // 0. 找出因服务器中断而遗留的 batch_dub 任务
-    const interruptedBatchJobs = await jobRepository.findInterruptedBatchJobs();
-
-    // 1. 修复重启前遗留的未完成僵尸任务
+    // 1. 修复重启前遗留的未完成僵尸任务（将所有 PENDING 或 RUNNING 状态的任务直接安全标记为 FAILED）
     const staleCount = await jobRepository.markStaleJobsAsFailed();
     if (staleCount > 0) {
       console.log(`[JobManager] Marked ${staleCount} stale jobs as FAILED.`);
     }
 
-    // 2. 自动续作被中断的 batch_dub 任务
-    for (const job of interruptedBatchJobs) {
-      console.log(`[JobManager] Auto-resuming interrupted batch_dub job for chapter ${job.target_id}`);
-      await jobRepository.update(job.id, { status: 'PENDING', error: null });
-      
-      const params = { chapterId: parseInt(job.target_id, 10) };
-      await this.bree.add({
-        name: job.job_name,
-        path: path.join(__dirname, '../jobs/batchDubbingJob.js'),
-        worker: {
-          workerData: {
-            jobId: job.id,
-            jobName: job.job_name,
-            params
-          }
-        }
-      });
-    }
-
-    // 3. 清理超过 7 天的历史任务，防止数据库膨胀
+    // 2. 清理超过 7 天的历史任务，防止数据库膨胀
     const cleanedCount = await jobRepository.cleanupOldJobs(7);
     if (cleanedCount > 0) {
       console.log(`[JobManager] Cleaned up ${cleanedCount} old jobs.`);
@@ -84,15 +62,6 @@ class JobManager {
 
     await this.bree.start();
     console.log('[JobManager] Bree initialized and listening.');
-
-    // 4. 在全局 Bree 启动就绪后，逐个安全启动我们刚刚添加的手动触发型单次续作任务，避免时序冲突
-    for (const job of interruptedBatchJobs) {
-      try {
-        this.bree.start(job.job_name);
-      } catch (err) {
-        console.error(`[JobManager] Failed to start auto-resumed job ${job.job_name}:`, err.message);
-      }
-    }
   }
 
   /**

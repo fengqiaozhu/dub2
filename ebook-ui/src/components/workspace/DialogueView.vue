@@ -1323,6 +1323,20 @@ onMounted(() => {
                     />
                     <button
                       type="button"
+                      class="audio-redub-btn"
+                      title="重新生成配音"
+                      :disabled="redubbingItemId === segment.audioItem.id || !segment.audioItem.dialogue_id"
+                      @click.stop="redubAudioItem(segment.audioItem)"
+                    >
+                      <svg v-if="redubbingItemId === segment.audioItem.id" class="spinner-small-svg" viewBox="0 0 24 24" width="14" height="14">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4" stroke-dashoffset="0"></circle>
+                      </svg>
+                      <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
                       class="audio-edit-btn"
                       title="编辑音频"
                       @click.stop="openAudioEditor(segment.audioItem)"
@@ -1542,10 +1556,14 @@ onMounted(() => {
 .emotion-chip.active, .emotion-chip:hover:not(:disabled) { border-color: rgba(var(--rc), .82); background: rgba(var(--rc), .16); color: var(--text-primary); }
 .emotion-chip:disabled { opacity: .55; cursor: not-allowed; }
 .segment-audio-block { margin-top: 4px; margin-bottom: 2px; }
-.segment-audio-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 6px; align-items: center; }
+.segment-audio-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px; gap: 6px; align-items: center; }
 .segment-audio { background: rgba(255,255,255,.03) !important; }
 .segment-audio.seq-highlight { border-color: rgba(0, 212, 170, 0.35) !important; }
 .segment-audio.is-stale { border-color: rgba(250,204,21,.28) !important; }
+.audio-redub-btn { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(0,212,170,.32); border-radius: var(--radius-sm); background: rgba(0,212,170,.06); color: var(--accent-cyan); cursor: pointer; transition: all .18s; flex-shrink: 0; }
+.audio-redub-btn:hover:not(:disabled) { border-color: var(--accent-cyan); background: rgba(0,212,170,.14); }
+.audio-redub-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.spinner-small-svg { animation: spin 1s linear infinite; }
 .audio-edit-btn { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(0,212,170,.32); border-radius: var(--radius-sm); background: rgba(0,212,170,.06); color: var(--accent-cyan); cursor: pointer; transition: all .18s; }
 .audio-edit-btn:hover { border-color: var(--accent-cyan); background: rgba(0,212,170,.14); }
 .stale-audio-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; padding: 5px 8px; border: 1px solid rgba(250,204,21,.24); border-radius: var(--radius-sm); background: rgba(250,204,21,.06); }
