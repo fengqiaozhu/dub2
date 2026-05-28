@@ -7,6 +7,7 @@ const pool = new Pool({
 });
 
 function normalizeRows(rows) {
+  if (!rows) return [];
   return rows.map((row) => {
     for (const [key, value] of Object.entries(row)) {
       if (typeof value === 'bigint') row[key] = Number(value);
@@ -17,7 +18,15 @@ function normalizeRows(rows) {
 
 async function query(text, params = []) {
   const result = await pool.query(text, params);
-  result.rows = normalizeRows(result.rows);
+  if (Array.isArray(result)) {
+    result.forEach((res) => {
+      if (res && res.rows) {
+        res.rows = normalizeRows(res.rows);
+      }
+    });
+  } else if (result && result.rows) {
+    result.rows = normalizeRows(result.rows);
+  }
   return result;
 }
 
@@ -38,7 +47,15 @@ async function transaction(callback) {
     const tx = {
       query: async (text, params = []) => {
         const result = await client.query(text, params);
-        result.rows = normalizeRows(result.rows);
+        if (Array.isArray(result)) {
+          result.forEach((res) => {
+            if (res && res.rows) {
+              res.rows = normalizeRows(res.rows);
+            }
+          });
+        } else if (result && result.rows) {
+          result.rows = normalizeRows(result.rows);
+        }
         return result;
       },
       one: async (text, params = []) => {
