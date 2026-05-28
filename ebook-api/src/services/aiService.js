@@ -16,11 +16,21 @@ class AiService {
       timeout: parseInt(process.env.DEEPSEEK_TIMEOUT) || 60000,
     };
 
-    this.openai = new OpenAI({
-      baseURL: this.chatAiModel.url,
-      apiKey: this.chatAiModel.apiKey,
-      timeout: this.chatAiModel.timeout
-    });
+    this.openai = null;
+  }
+
+  getClient() {
+    if (!this.chatAiModel.apiKey) {
+      throw new Error('DeepSeek API Key is missing in environment variables.');
+    }
+    if (!this.openai) {
+      this.openai = new OpenAI({
+        baseURL: this.chatAiModel.url,
+        apiKey: this.chatAiModel.apiKey,
+        timeout: this.chatAiModel.timeout
+      });
+    }
+    return this.openai;
   }
 
   async retryableRequest(fn, retries = 3) {
@@ -108,17 +118,17 @@ class AiService {
       .filter((character) => character.role && character.dialogues.length > 0);
   }
 
-  persistAnalysisResult(chapter, analysisResult) {
+  async persistAnalysisResult(chapter, analysisResult) {
     const normalizedResult = this.normalizeAnalysisResult(analysisResult);
 
     // 重新分析是强重置：清空本章既有标注，再用新的 AI 结果重建。
-    dialogueRepository.deleteByChapterId(chapter.id);
-    chapterCharacterRepository.deleteByChapterId(chapter.id);
+    await dialogueRepository.deleteByChapterId(chapter.id);
+    await chapterCharacterRepository.deleteByChapterId(chapter.id);
     const usedRanges = [];
 
     for (let i = 0; i < normalizedResult.length; i++) {
       const character = normalizedResult[i];
-      const chapterCharacterId = chapterCharacterRepository.upsert(
+      const chapterCharacterId = await chapterCharacterRepository.upsert(
         chapter.id,
         chapter.book_id,
         character.role
@@ -146,10 +156,10 @@ class AiService {
           order_index: validRange ? charStart : idx,
         };
       }).filter(Boolean);
-      dialogueRepository.createMany(dialoguesToInsert);
+      await dialogueRepository.createMany(dialoguesToInsert);
     }
 
-    bookCharacterRepository.recalculateForBook(chapter.book_id);
+    await bookCharacterRepository.recalculateForBook(chapter.book_id);
     return normalizedResult;
   }
 
@@ -158,12 +168,9 @@ class AiService {
    */
   async analyzeText(text) {
     const endpoint = this.chatAiModel;
-    if (!endpoint.apiKey) {
-      throw new Error("DeepSeek API Key is missing in environment variables.");
-    }
 
     return this.retryableRequest(async () => {
-      const completion = await this.openai.chat.completions.create({
+      const completion = await this.getClient().chat.completions.create({
         model: endpoint.model,
         messages: [
           {
@@ -231,7 +238,7 @@ class AiService {
   }
 
   async analyzeChapter(chapterId) {
-    const chapter = chapterRepository.findById(chapterId);
+    const chapter = await chapterRepository.findById(chapterId);
     if (!chapter) {
       throw new Error(`Chapter with ID ${chapterId} not found.`);
     }
@@ -293,10 +300,10 @@ class AiService {
     }
 
     // === 写入结构化新表 ===
-    this.persistAnalysisResult(chapter, normalizedResult);
+    await this.persistAnalysisResult(chapter, normalizedResult);
 
     // 5. 保留原始 ai_analysis 字段作为备份（不再是主要数据源）
-    chapterRepository.update(chapterId, {
+    await chapterRepository.update(chapterId, {
       ai_analysis: JSON.stringify(analysisResult)
     });
 

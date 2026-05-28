@@ -107,20 +107,20 @@ class TtsService {
     }
 
     const confirmedVoiceIds = [];
-    const syncedVoices = remoteVoices.map((voice) => {
+    const syncedVoices = await Promise.all(remoteVoices.map(async (voice) => {
       const providerVoiceId = voice.provider_voice_id || voice.voice_id || voice.voiceId || voice.id;
       const existingProviderVoice = providerVoiceId
-        ? providerVoiceRepository.findByProviderVoiceId(providerId, providerVoiceId)
+        ? await providerVoiceRepository.findByProviderVoiceId(providerId, providerVoiceId)
         : null;
       const markerInfo = extractMarker(voice) || extractMarker(existingProviderVoice?.provider_meta);
-      const profile = markerInfo ? voiceProfileRepository.findById(markerInfo.voice_profile_id) : null;
+      const profile = markerInfo ? await voiceProfileRepository.findById(markerInfo.voice_profile_id) : null;
       if (profile) {
-        ensureProfileSampleHash(profile, voiceProfileRepository);
+        await ensureProfileSampleHash(profile, voiceProfileRepository);
       }
 
       if (providerVoiceId && profile && isMarkerMatch(profile, markerInfo)) {
         confirmedVoiceIds.push(providerVoiceId);
-        providerVoiceRepository.upsert({
+        await providerVoiceRepository.upsert({
           voice_profile_id: profile.id,
           provider: providerId,
           provider_voice_id: providerVoiceId,
@@ -150,9 +150,9 @@ class TtsService {
         projection_confirmed: false,
         status: normalizeStatus(voice.status)
       };
-    });
+    }));
 
-    providerVoiceRepository.deleteMissingForProvider(providerId, confirmedVoiceIds);
+    await providerVoiceRepository.deleteMissingForProvider(providerId, confirmedVoiceIds);
 
     const filtered = syncedVoices.filter((voice) => matchesStatus(voice, params.status));
     const limit = Math.max(1, parseInt(params.limit, 10) || 50);
@@ -206,7 +206,10 @@ class TtsService {
       text: params.text,
       voiceId: params.voiceId || params.voice_id,
       model: plan.model,
-      options: plan.providerOptions
+      options: {
+        ...plan.providerOptions,
+        storage: params.options?.storage
+      }
     });
 
     return {

@@ -1,10 +1,11 @@
 const express = require('express');
 const multer = require('multer');
+const os = require('os');
 const path = require('path');
 const mosiController = require('../controllers/mosiController');
 
 const router = express.Router();
-const upload = multer({ dest: path.join(__dirname, '../../public/uploads') });
+const upload = multer({ dest: path.join(os.tmpdir(), 'ebook-uploads') });
 
 // Voices (获取用户自己克隆的音色)
 router.get('/voices', mosiController.getVoices);

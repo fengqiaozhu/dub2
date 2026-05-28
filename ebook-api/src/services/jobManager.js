@@ -1,21 +1,21 @@
 const path = require('path');
 const Bree = require('bree');
 const { v4: uuidv4 } = require('uuid');
-const jobRepository = require('../repositories/sqlite/SqliteJobRepository');
+const { jobRepository } = require('../repositories');
 
 class JobManager {
   constructor() {
     this.bree = new Bree({
       root: path.join(__dirname, '../jobs'),
       jobs: [],
-      workerMessageHandler: (msg) => {
+      workerMessageHandler: async (msg) => {
         try {
           const data = msg.message;
           if (!data || !data.type) return;
 
           if (data.type === 'PROGRESS') {
             // Update progress
-            jobRepository.update(data.jobId, {
+            await jobRepository.update(data.jobId, {
               status: 'RUNNING',
               progress: data.value
             });
@@ -23,7 +23,7 @@ class JobManager {
           }
           
           if (data.type === 'DONE') {
-            jobRepository.update(data.jobId, {
+            await jobRepository.update(data.jobId, {
               status: 'DONE',
               progress: 100,
               result: data.result
@@ -33,7 +33,7 @@ class JobManager {
           }
           
           if (data.type === 'ERROR') {
-            jobRepository.update(data.jobId, {
+            await jobRepository.update(data.jobId, {
               status: 'FAILED',
               error: data.error
             });
@@ -49,13 +49,10 @@ class JobManager {
 
   async start() {
     // 0. 找出因服务器中断而遗留的 batch_dub 任务
-    const interruptedBatchJobs = jobRepository.db.prepare(`
-      SELECT * FROM jobs 
-      WHERE status IN ('PENDING', 'RUNNING') AND type = 'batch_dub'
-    `).all();
+    const interruptedBatchJobs = await jobRepository.findInterruptedBatchJobs();
 
     // 1. 修复重启前遗留的未完成僵尸任务
-    const staleCount = jobRepository.markStaleJobsAsFailed();
+    const staleCount = await jobRepository.markStaleJobsAsFailed();
     if (staleCount > 0) {
       console.log(`[JobManager] Marked ${staleCount} stale jobs as FAILED.`);
     }
@@ -63,7 +60,7 @@ class JobManager {
     // 2. 自动续作被中断的 batch_dub 任务
     for (const job of interruptedBatchJobs) {
       console.log(`[JobManager] Auto-resuming interrupted batch_dub job for chapter ${job.target_id}`);
-      jobRepository.update(job.id, { status: 'PENDING', error: null });
+      await jobRepository.update(job.id, { status: 'PENDING', error: null });
       
       const params = { chapterId: parseInt(job.target_id, 10) };
       await this.bree.add({
@@ -81,7 +78,7 @@ class JobManager {
     }
 
     // 2. 清理超过 7 天的历史任务，防止数据库膨胀
-    const cleanedCount = jobRepository.cleanupOldJobs(7);
+    const cleanedCount = await jobRepository.cleanupOldJobs(7);
     if (cleanedCount > 0) {
       console.log(`[JobManager] Cleaned up ${cleanedCount} old jobs.`);
     }
@@ -100,7 +97,7 @@ class JobManager {
    */
   async startJob(type, targetId, scriptName, params = {}, options = {}) {
     if (options.dedupe && targetId) {
-      const activeJob = jobRepository.findActiveByTypeAndTarget(type, targetId);
+      const activeJob = await jobRepository.findActiveByTypeAndTarget(type, targetId);
       if (activeJob) {
         console.log(`[JobManager] Reusing active ${type} job ${activeJob.id} for target ${targetId}`);
         return activeJob.id;
@@ -111,7 +108,7 @@ class JobManager {
     const jobName = `${type}-${jobId}`;
 
     // 1. Save to DB
-    jobRepository.create({
+    await jobRepository.create({
       id: jobId,
       job_name: jobName,
       type: type,

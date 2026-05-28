@@ -92,10 +92,10 @@ const buildAudioTimeline = (speechUnits, audioItems) => {
   };
 };
 
-function ensureAnalysisTables(chapter, characters) {
+async function ensureAnalysisTables(chapter, characters) {
   if (characters.length > 0 || !chapter.ai_analysis) return characters;
   try {
-    aiService.persistAnalysisResult(chapter, JSON.parse(chapter.ai_analysis));
+    await aiService.persistAnalysisResult(chapter, JSON.parse(chapter.ai_analysis));
     return chapterCharacterRepository.findByChapterId(chapter.id);
   } catch (error) {
     console.warn(`[StorySourcePackage] Failed to repair analysis tables for chapter ${chapter.id}:`, error.message);
@@ -103,16 +103,16 @@ function ensureAnalysisTables(chapter, characters) {
   }
 }
 
-function createStorySourcePackage(chapterId) {
-  const chapter = chapterRepository.findById(chapterId);
+async function createStorySourcePackage(chapterId) {
+  const chapter = await chapterRepository.findById(chapterId);
   if (!chapter) {
     throw new Error('Chapter not found');
   }
 
-  const book = bookRepository.findById(chapter.book_id);
-  let characters = ensureAnalysisTables(chapter, chapterCharacterRepository.findByChapterId(chapterId));
-  const dialogues = dialogueRepository.findByChapterId(chapterId);
-  const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
+  const book = await bookRepository.findById(chapter.book_id);
+  let characters = await ensureAnalysisTables(chapter, await chapterCharacterRepository.findByChapterId(chapterId));
+  const dialogues = await dialogueRepository.findByChapterId(chapterId);
+  const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(chapterId);
   const paragraphs = annotationService.buildParagraphs(chapter.content || '').map((paragraph) => ({
     paragraph_id: makeParagraphId(paragraph),
     ...paragraph,
@@ -126,7 +126,7 @@ function createStorySourcePackage(chapterId) {
 
   let plan = { roles: [], tasks: [], blocked_dialogues: [], provider_summary: [], stats: null };
   try {
-    plan = dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
+    plan = await dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
   } catch (error) {
     console.warn(`[StorySourcePackage] Failed to build dubbing plan for chapter ${chapterId}:`, error.message);
   }
@@ -134,8 +134,8 @@ function createStorySourcePackage(chapterId) {
   const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
   const rolePlanMap = new Map((plan.roles || []).map((role) => [role.character_name, role]));
   const bindingMap = new Map(
-    characterVoiceBindingRepository
-      .findByBookId(chapter.book_id)
+    (await characterVoiceBindingRepository
+      .findByBookId(chapter.book_id))
       .map((binding) => [binding.character_name, binding])
   );
   const audioItems = buildChapterAudioItems(chapter, dialogues, taskMap, skipRanges);
@@ -203,7 +203,7 @@ function createStorySourcePackage(chapterId) {
     .map((item) => String(item.dialogue_id || item.id)));
   const currentAudioItems = getChapterAudioItems(dialogues.filter((dialogue) => currentIds.has(String(dialogue.id))));
   const currentSourceHash = computeChapterAudioHash(currentAudioItems);
-  const mergedAudio = chapterAudioExportRepository.findLatestByChapterId(chapterId);
+  const mergedAudio = await chapterAudioExportRepository.findLatestByChapterId(chapterId);
 
   return {
     version: PACKAGE_VERSION,

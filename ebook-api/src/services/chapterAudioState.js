@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
+const { keyFromMediaUrl } = require('./storage/keyBuilder');
 
 const publicDir = path.resolve(__dirname, '../../public');
 
@@ -146,10 +146,14 @@ function getChapterAudioItems(dialogues) {
   return dialogues
     .filter((dialogue) => dialogue.audio_url && dialogue.audio_status !== 'failed')
     .map((dialogue) => {
-      const audioPath = path.resolve(publicDir, String(dialogue.audio_url).replace(/^\/+/, ''));
-      return { dialogue, audioPath };
+      const objectKey = keyFromMediaUrl(dialogue.audio_url);
+      return {
+        dialogue,
+        objectKey,
+        audioPath: objectKey
+      };
     })
-    .filter((item) => item.audioPath.startsWith(publicDir) && fs.existsSync(item.audioPath));
+    .filter((item) => Boolean(item.objectKey));
 }
 
 function computeChapterAudioHash(audioItems) {

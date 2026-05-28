@@ -2,6 +2,8 @@ const aiService = require('../services/aiService');
 const fs = require('fs');
 const path = require('path');
 const archiver = require('archiver');
+const storageService = require('../services/storage/storageService');
+const { keyFromMediaUrl } = require('../services/storage/keyBuilder');
 const {
   bookRepository,
   chapterRepository,
@@ -46,30 +48,30 @@ const createZipArchive = (options) => {
 };
 
 class ChapterController {
-  getChapter(req, res) {
+  async getChapter(req, res) {
     try {
       const id = req.params.id;
-      const chapter = chapterRepository.findById(id);
+      const chapter = await chapterRepository.findById(id);
       if (!chapter) {
         return res.status(404).json({ error: 'Chapter not found' });
       }
       const rawAiAnalysis = chapter.ai_analysis;
 
       // 附加结构化角色和对白数据
-      let characters = chapterCharacterRepository.findByChapterId(id);
+      let characters = await chapterCharacterRepository.findByChapterId(id);
       if (characters.length === 0 && rawAiAnalysis) {
         try {
-          aiService.persistAnalysisResult(chapter, JSON.parse(rawAiAnalysis));
-          characters = chapterCharacterRepository.findByChapterId(id);
+          await aiService.persistAnalysisResult(chapter, JSON.parse(rawAiAnalysis));
+          characters = await chapterCharacterRepository.findByChapterId(id);
         } catch (repairError) {
           console.warn(`[ChapterController] Failed to repair analysis tables for chapter ${id}:`, repairError.message);
         }
       }
-      const refreshedDialogues = dialogueRepository.findByChapterId(id);
-      const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(id);
+      const refreshedDialogues = await dialogueRepository.findByChapterId(id);
+      const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(id);
 
       for (const character of characters) {
-        character.dialogues = dialogueRepository.findByChapterCharacterId(character.id);
+        character.dialogues = await dialogueRepository.findByChapterCharacterId(character.id);
       }
       chapter.characters = characters;
       chapter.paragraphs = annotationService.buildParagraphs(chapter.content || '').map((paragraph) => ({
@@ -93,7 +95,7 @@ class ChapterController {
 
       let plan = { tasks: [] };
       try {
-        plan = dubbingPlanner.createPlan(id, { includeCompleted: true });
+        plan = await dubbingPlanner.createPlan(id, { includeCompleted: true });
       } catch (planError) {
         console.warn(`[ChapterController] Failed to build audio state for chapter ${id}:`, planError.message);
       }
@@ -118,7 +120,7 @@ class ChapterController {
 
       const currentDialogueIds = new Set(chapter.audio_items.filter((item) => item.audio_status === 'current').map((item) => String(item.id)));
       const audioItems = getChapterAudioItems(refreshedDialogues.filter((dialogue) => currentDialogueIds.has(String(dialogue.id))));
-      const exportRecord = chapterAudioExportRepository.findLatestByChapterId(id);
+      const exportRecord = await chapterAudioExportRepository.findLatestByChapterId(id);
       if (exportRecord) {
         const currentHash = computeChapterAudioHash(audioItems);
         chapter.merged_audio_export = {
@@ -136,33 +138,33 @@ class ChapterController {
     }
   }
 
-  createChapter(req, res) {
+  async createChapter(req, res) {
     try {
       const { book_id, title, content, chapter_index } = req.body;
       if (!book_id || !content) {
         return res.status(400).json({ error: 'book_id and content are required' });
       }
 
-      const id = chapterRepository.create({ book_id, title, content, chapter_index });
+      const id = await chapterRepository.create({ book_id, title, content, chapter_index });
       res.status(201).json({ message: 'Chapter created', id });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  updateChapter(req, res) {
+  async updateChapter(req, res) {
     try {
       const id = req.params.id;
       const updates = req.body;
-      const success = chapterRepository.update(id, updates);
+      const success = await chapterRepository.update(id, updates);
       
       if (success) {
         if (updates.content !== undefined) {
-          dialogueRepository.deleteByChapterId(id);
-          chapterCharacterRepository.deleteByChapterId(id);
-          chapterAudioSkipRangeRepository.deleteByChapterId(id);
+          await dialogueRepository.deleteByChapterId(id);
+          await chapterCharacterRepository.deleteByChapterId(id);
+          await chapterAudioSkipRangeRepository.deleteByChapterId(id);
         }
-        chapterAudioExportRepository.deleteByChapterId(id);
+        await chapterAudioExportRepository.deleteByChapterId(id);
         res.json({ message: 'Chapter updated successfully' });
       } else {
         res.status(404).json({ error: 'Chapter not found' });
@@ -172,10 +174,10 @@ class ChapterController {
     }
   }
 
-  deleteChapter(req, res) {
+  async deleteChapter(req, res) {
     try {
       const id = req.params.id;
-      const success = chapterRepository.delete(id);
+      const success = await chapterRepository.delete(id);
       
       if (success) {
         res.json({ message: 'Chapter deleted successfully' });
@@ -191,7 +193,7 @@ class ChapterController {
     try {
       const chapterId = parseInt(req.params.id, 10);
       
-      const chapter = chapterRepository.findById(chapterId);
+      const chapter = await chapterRepository.findById(chapterId);
       if (!chapter) {
         return res.status(404).json({ error: 'Chapter not found' });
       }
@@ -221,10 +223,10 @@ class ChapterController {
     }
   }
 
-  createAnnotation(req, res) {
+  async createAnnotation(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
-      const annotation = annotationService.createAnnotation(chapterId, req.body || {});
+      const annotation = await annotationService.createAnnotation(chapterId, req.body || {});
       res.status(201).json({ message: 'Annotation created', data: annotation });
     } catch (error) {
       const status = error.message === 'Chapter not found'
@@ -240,9 +242,9 @@ class ChapterController {
     }
   }
 
-  updateAnnotation(req, res) {
+  async updateAnnotation(req, res) {
     try {
-      const annotation = annotationService.updateAnnotation(parseInt(req.params.id, 10), req.body || {});
+      const annotation = await annotationService.updateAnnotation(parseInt(req.params.id, 10), req.body || {});
       res.json({ message: 'Annotation updated', data: annotation });
     } catch (error) {
       const status = error.message === 'Annotation not found' ? 404 : 400;
@@ -250,9 +252,9 @@ class ChapterController {
     }
   }
 
-  deleteAnnotation(req, res) {
+  async deleteAnnotation(req, res) {
     try {
-      annotationService.deleteAnnotation(parseInt(req.params.id, 10));
+      await annotationService.deleteAnnotation(parseInt(req.params.id, 10));
       res.json({ message: 'Annotation deleted' });
     } catch (error) {
       const status = error.message === 'Annotation not found' ? 404 : 500;
@@ -260,10 +262,10 @@ class ChapterController {
     }
   }
 
-  updateAudioSkipRange(req, res) {
+  async updateAudioSkipRange(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
-      const chapter = chapterRepository.findById(chapterId);
+      const chapter = await chapterRepository.findById(chapterId);
       if (!chapter) {
         return res.status(404).json({ error: 'Chapter not found' });
       }
@@ -271,11 +273,11 @@ class ChapterController {
       const skipAudio = req.body?.skip_audio === true;
 
       if (skipAudio) {
-        chapterAudioSkipRangeRepository.upsert(chapterId, charStart, charEnd);
+        await chapterAudioSkipRangeRepository.upsert(chapterId, charStart, charEnd);
       } else {
-        chapterAudioSkipRangeRepository.deleteRange(chapterId, charStart, charEnd);
+        await chapterAudioSkipRangeRepository.deleteRange(chapterId, charStart, charEnd);
       }
-      chapterAudioExportRepository.deleteByChapterId(chapterId);
+      await chapterAudioExportRepository.deleteByChapterId(chapterId);
       res.json({
         message: skipAudio ? 'Audio skip range saved' : 'Audio skip range removed',
         data: { chapter_id: chapterId, char_start: charStart, char_end: charEnd, skip_audio: skipAudio }
@@ -295,22 +297,22 @@ class ChapterController {
       const items = req.body?.items || []; // Optional override
       const force = req.body?.force === true;
 
-      const chapter = chapterRepository.findById(chapterId);
+      const chapter = await chapterRepository.findById(chapterId);
       if (!chapter) {
         return res.status(404).json({ error: 'Chapter not found' });
       }
 
       if (force) {
-        dialogueRepository.clearAudioByChapterId(chapterId);
-        chapterAudioExportRepository.deleteByChapterId(chapterId);
-        dialogueRepository.deleteByChapterIdAndSource(chapterId, 'narrator');
+        await dialogueRepository.clearAudioByChapterId(chapterId);
+        await chapterAudioExportRepository.deleteByChapterId(chapterId);
+        await dialogueRepository.deleteByChapterIdAndSource(chapterId, 'narrator');
       }
 
       // 2. Fetch current range annotations and rebuild narrator gaps from source text.
-      const currentDialogues = dialogueRepository.findByChapterId(chapterId);
-      const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
+      const currentDialogues = await dialogueRepository.findByChapterId(chapterId);
+      const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(chapterId);
       // Ensure "旁白" character exists
-      const narratorCharId = chapterCharacterRepository.upsert(chapterId, chapter.book_id, '旁白');
+      const narratorCharId = await chapterCharacterRepository.upsert(chapterId, chapter.book_id, '旁白');
 
       // 3. Compute narrator gaps
       const hasNarratorRows = currentDialogues.some((dialogue) => dialogue.source === 'narrator');
@@ -335,7 +337,7 @@ class ChapterController {
 
       // 4. Insert new narrators
       if (narratorDialogues.length > 0) {
-        dialogueRepository.createMany(narratorDialogues);
+        await dialogueRepository.createMany(narratorDialogues);
       }
 
       // 5. Start batch dubbing job
@@ -359,10 +361,10 @@ class ChapterController {
     }
   }
 
-  dubbingPreview(req, res) {
+  async dubbingPreview(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
-      const plan = dubbingPlanner.createPlan(chapterId);
+      const plan = await dubbingPlanner.createPlan(chapterId);
       res.json({ data: plan });
     } catch (error) {
       if (error.message === 'Chapter not found') {
@@ -372,10 +374,10 @@ class ChapterController {
     }
   }
 
-  exportStorySourcePackage(req, res) {
+  async exportStorySourcePackage(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
-      const storyPackage = createStorySourcePackage(chapterId);
+      const storyPackage = await createStorySourcePackage(chapterId);
       const filename = `chapter-${chapterId}-story-source-package.json`;
 
       res.attachment(filename);
@@ -389,20 +391,20 @@ class ChapterController {
     }
   }
 
-  exportAudioArchive(req, res) {
+  async exportAudioArchive(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
-      const chapter = chapterRepository.findById(chapterId);
+      const chapter = await chapterRepository.findById(chapterId);
       if (!chapter) {
         return res.status(404).json({ error: 'Chapter not found' });
       }
 
-      const book = bookRepository.findById(chapter.book_id);
-      const storedDialogues = dialogueRepository.findByChapterId(chapterId);
-      const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
+      const book = await bookRepository.findById(chapter.book_id);
+      const storedDialogues = await dialogueRepository.findByChapterId(chapterId);
+      const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(chapterId);
       let plan = { tasks: [] };
       try {
-        plan = dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
+        plan = await dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
       } catch (planError) {
         console.warn(`[ChapterController] Failed to build archive audio state for chapter ${chapterId}:`, planError.message);
       }
@@ -432,12 +434,12 @@ class ChapterController {
       };
 
       const exportItems = [];
-      dialogues.forEach((dialogue, index) => {
-        const relativeAudioPath = String(dialogue.audio_url).replace(/^\/+/, '');
-        const audioPath = path.resolve(publicDir, relativeAudioPath);
-        if (!audioPath.startsWith(publicDir) || !fs.existsSync(audioPath)) return;
+      for (let index = 0; index < dialogues.length; index += 1) {
+        const dialogue = dialogues[index];
+        const objectKey = keyFromMediaUrl(dialogue.audio_url);
+        if (!objectKey || !(await storageService.headObject(objectKey))) continue;
 
-        const ext = path.extname(audioPath) || '.wav';
+        const ext = path.extname(objectKey) || '.wav';
         const filename = [
           String(index + 1).padStart(3, '0'),
           safeName(dialogue.character_name || dialogue.source),
@@ -455,8 +457,8 @@ class ChapterController {
           duration: dialogue.audio_duration
         });
 
-        exportItems.push({ audioPath, filename });
-      });
+        exportItems.push({ objectKey, filename });
+      }
 
       if (exportItems.length === 0) {
         return res.status(400).json({ error: 'Synthesized audio records exist, but the files are missing on disk' });
@@ -475,9 +477,10 @@ class ChapterController {
       });
       archive.pipe(res);
 
-      exportItems.forEach((item) => {
-        archive.file(item.audioPath, { name: item.filename });
-      });
+      for (const item of exportItems) {
+        const object = await storageService.getObjectStream(item.objectKey);
+        archive.append(object.stream, { name: item.filename });
+      }
 
       archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
       archive.finalize();
@@ -489,7 +492,7 @@ class ChapterController {
   async exportMergedAudio(req, res) {
     try {
       const chapterId = parseInt(req.params.id, 10);
-      const chapter = chapterRepository.findById(chapterId);
+      const chapter = await chapterRepository.findById(chapterId);
       if (!chapter) {
         return res.status(404).json({ error: 'Chapter not found' });
       }

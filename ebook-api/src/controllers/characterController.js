@@ -10,6 +10,8 @@ const jobManager = require('../services/jobManager');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
 const fs = require('fs');
 const path = require('path');
+const storageService = require('../services/storage/storageService');
+const { dialogueAudioKey, keyFromMediaUrl, mediaUrlForKey } = require('../services/storage/keyBuilder');
 
 class CharacterController {
   // ==================== 章节角色 ====================
@@ -18,12 +20,12 @@ class CharacterController {
    * GET /api/chapters/:id/characters
    * 查询章节所有角色及其对白
    */
-  getChapterCharacters(req, res) {
+  async getChapterCharacters(req, res) {
     try {
       const chapterId = req.params.id;
-      const characters = chapterCharacterRepository.findByChapterId(chapterId);
+      const characters = await chapterCharacterRepository.findByChapterId(chapterId);
       for (const character of characters) {
-        character.dialogues = dialogueRepository.findByChapterCharacterId(character.id);
+        character.dialogues = await dialogueRepository.findByChapterCharacterId(character.id);
       }
       res.json({ data: characters });
     } catch (error) {
@@ -35,10 +37,10 @@ class CharacterController {
    * GET /api/books/:id/characters
    * 查询全书角色汇总（含音色绑定信息）
    */
-  getBookCharacters(req, res) {
+  async getBookCharacters(req, res) {
     try {
       const bookId = req.params.id;
-      const characters = bookCharacterRepository.findByBookId(bookId);
+      const characters = await bookCharacterRepository.findByBookId(bookId);
       res.json({ data: characters });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -51,14 +53,14 @@ class CharacterController {
    * GET /api/chapter-characters/:id/dialogues
    * 查询某角色的所有对白
    */
-  getDialogues(req, res) {
+  async getDialogues(req, res) {
     try {
       const chapterCharacterId = req.params.id;
-      const cc = chapterCharacterRepository.findById(chapterCharacterId);
+      const cc = await chapterCharacterRepository.findById(chapterCharacterId);
       if (!cc) {
         return res.status(404).json({ error: 'Chapter character not found' });
       }
-      const dialogues = dialogueRepository.findByChapterCharacterId(chapterCharacterId);
+      const dialogues = await dialogueRepository.findByChapterCharacterId(chapterCharacterId);
       res.json({ data: dialogues });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -70,10 +72,10 @@ class CharacterController {
    * 手动新增对白
    * Body: { content, segment_id?, char_start?, char_end?, order_index? }
    */
-  createDialogue(req, res) {
+  async createDialogue(req, res) {
     try {
       const chapterCharacterId = parseInt(req.params.id, 10);
-      const cc = chapterCharacterRepository.findById(chapterCharacterId);
+      const cc = await chapterCharacterRepository.findById(chapterCharacterId);
       if (!cc) {
         return res.status(404).json({ error: 'Chapter character not found' });
       }
@@ -83,7 +85,7 @@ class CharacterController {
         return res.status(400).json({ error: 'content is required' });
       }
 
-      const id = dialogueRepository.create({
+      const id = await dialogueRepository.create({
         chapter_character_id: chapterCharacterId,
         segment_id: segment_id ?? null,
         chapter_id: cc.chapter_id,
@@ -95,10 +97,10 @@ class CharacterController {
         updated_by: 'user',
         order_index: order_index ?? 0,
       });
-      if (segment_id) chapterSegmentRepository.updateType(segment_id, 'dialogue');
+      if (segment_id) await chapterSegmentRepository.updateType(segment_id, 'dialogue');
 
       // 更新全书角色统计
-      bookCharacterRepository.recalculateForBook(cc.book_id);
+      await bookCharacterRepository.recalculateForBook(cc.book_id);
 
       res.status(201).json({ message: 'Dialogue created', id });
     } catch (error) {
@@ -111,11 +113,11 @@ class CharacterController {
    * 编辑对白内容
    * Body: { content?, char_start?, char_end?, order_index? }
    */
-  updateDialogue(req, res) {
+  async updateDialogue(req, res) {
     try {
       const id = req.params.id;
       const updates = req.body;
-      const success = dialogueRepository.update(id, updates);
+      const success = await dialogueRepository.update(id, updates);
 
       if (success) {
         res.json({ message: 'Dialogue updated successfully' });
@@ -131,22 +133,22 @@ class CharacterController {
    * DELETE /api/dialogues/:id
    * 删除对白
    */
-  deleteDialogue(req, res) {
+  async deleteDialogue(req, res) {
     try {
       const id = req.params.id;
 
       // 先查出 book_id 用于重算统计
-      const dialogue = dialogueRepository.findById(id);
+      const dialogue = await dialogueRepository.findById(id);
       if (!dialogue) {
         return res.status(404).json({ error: 'Dialogue not found' });
       }
-      const cc = chapterCharacterRepository.findById(dialogue.chapter_character_id);
+      const cc = await chapterCharacterRepository.findById(dialogue.chapter_character_id);
 
-      const success = dialogueRepository.delete(id);
+      const success = await dialogueRepository.delete(id);
       if (success) {
-        if (dialogue.segment_id) chapterSegmentRepository.updateType(dialogue.segment_id, 'unknown');
-        if (cc) chapterCharacterRepository.deleteUnusedByChapterId(cc.chapter_id);
-        if (cc) bookCharacterRepository.recalculateForBook(cc.book_id);
+        if (dialogue.segment_id) await chapterSegmentRepository.updateType(dialogue.segment_id, 'unknown');
+        if (cc) await chapterCharacterRepository.deleteUnusedByChapterId(cc.chapter_id);
+        if (cc) await bookCharacterRepository.recalculateForBook(cc.book_id);
         res.json({ message: 'Dialogue deleted successfully' });
       } else {
         res.status(404).json({ error: 'Dialogue not found' });
@@ -159,12 +161,12 @@ class CharacterController {
   async redubDialogue(req, res) {
     try {
       const id = parseInt(req.params.id, 10);
-      const dialogue = dialogueRepository.findById(id);
+      const dialogue = await dialogueRepository.findById(id);
       if (!dialogue) {
         return res.status(404).json({ error: 'Dialogue not found' });
       }
 
-      const plan = dubbingPlanner.createPlan(dialogue.chapter_id, { includeCompleted: true });
+      const plan = await dubbingPlanner.createPlan(dialogue.chapter_id, { includeCompleted: true });
       const role = plan.roles.find((item) => item.character_name === dialogue.character_name);
       if (!role?.ready) {
         return res.status(400).json({ error: role?.message || 'Dubbing plan is not ready' });
@@ -174,8 +176,8 @@ class CharacterController {
         return res.status(400).json({ error: 'Dialogue is not ready for dubbing' });
       }
 
-      dialogueRepository.clearAudioById(id);
-      chapterAudioExportRepository.deleteByChapterId(dialogue.chapter_id);
+      await dialogueRepository.clearAudioById(id);
+      await chapterAudioExportRepository.deleteByChapterId(dialogue.chapter_id);
       const jobId = await jobManager.startJob(
         'redub_dialogue',
         id.toString(),
@@ -192,25 +194,25 @@ class CharacterController {
     }
   }
 
-  clearAudio(req, res) {
+  async clearAudio(req, res) {
     try {
       const id = parseInt(req.params.id, 10);
-      const dialogue = dialogueRepository.findById(id);
+      const dialogue = await dialogueRepository.findById(id);
       if (!dialogue) {
         return res.status(404).json({ error: 'Dialogue not found' });
       }
-      dialogueRepository.clearAudioById(id);
-      chapterAudioExportRepository.deleteByChapterId(dialogue.chapter_id);
+      await dialogueRepository.clearAudioById(id);
+      await chapterAudioExportRepository.deleteByChapterId(dialogue.chapter_id);
       res.json({ message: 'Dialogue audio state cleared' });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  saveEditedAudio(req, res) {
+  async saveEditedAudio(req, res) {
     try {
       const id = parseInt(req.params.id, 10);
-      const dialogue = dialogueRepository.findById(id);
+      const dialogue = await dialogueRepository.findById(id);
       if (!dialogue) {
         return res.status(404).json({ error: 'Dialogue not found' });
       }
@@ -220,34 +222,34 @@ class CharacterController {
 
       const duration = Number(req.body?.duration);
       const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : null;
-      const audioDir = path.join(__dirname, '../../public/audio');
-      fs.mkdirSync(audioDir, { recursive: true });
-
-      const filename = `dialogue-${id}-edited-${Date.now()}.wav`;
-      const filePath = path.join(audioDir, filename);
-      fs.writeFileSync(filePath, req.file.buffer);
+      const key = dialogueAudioKey(dialogue.book_id, dialogue.chapter_id, id, '.wav');
+      await storageService.putObject(key, req.file.buffer, {
+        contentType: req.file.mimetype || 'audio/wav',
+        entityType: 'dialogue_audio',
+        entityId: String(id),
+        metadata: { edited: 'true' }
+      });
+      const audioUrl = mediaUrlForKey(key);
 
       const previousUrl = dialogue.audio_url;
-      dialogueRepository.update(id, {
-        audio_url: `/audio/${filename}`,
+      await dialogueRepository.update(id, {
+        audio_url: audioUrl,
         audio_duration: safeDuration,
         audio_source_hash: dialogue.audio_source_hash,
         audio_error: null,
         audio_status: 'current'
       });
-      chapterAudioExportRepository.deleteByChapterId(dialogue.chapter_id);
+      await chapterAudioExportRepository.deleteByChapterId(dialogue.chapter_id);
 
-      if (previousUrl && String(previousUrl).startsWith('/audio/')) {
-        const previousPath = path.resolve(path.join(__dirname, '../../public'), String(previousUrl).replace(/^\/+/, ''));
-        if (previousPath.startsWith(audioDir) && previousPath !== filePath && fs.existsSync(previousPath)) {
-          fs.unlink(previousPath, () => {});
-        }
+      const previousKey = keyFromMediaUrl(previousUrl);
+      if (previousKey && previousKey !== key) {
+        await storageService.deleteObject(previousKey);
       }
 
       res.json({
         message: 'Dialogue audio updated',
         data: {
-          audio_url: `/audio/${filename}`,
+          audio_url: audioUrl,
           audio_duration: safeDuration
         }
       });
@@ -262,20 +264,20 @@ class CharacterController {
    * GET /api/books/:id/voice-bindings
    * 查全书所有角色的音色绑定
    */
-  getVoiceBindings(req, res) {
+  async getVoiceBindings(req, res) {
     try {
       const bookId = req.params.id;
-      const bindings = characterVoiceBindingRepository.findByBookId(bookId);
+      const bindings = await characterVoiceBindingRepository.findByBookId(bookId);
       res.json({ data: bindings });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  getVoiceUsage(req, res) {
+  async getVoiceUsage(req, res) {
     try {
       const bookId = req.params.id;
-      const usage = characterVoiceBindingRepository.findVoiceUsageByBookId(bookId);
+      const usage = await characterVoiceBindingRepository.findVoiceUsageByBookId(bookId);
       res.json({ data: usage });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -287,7 +289,7 @@ class CharacterController {
    * 绑定或更新角色音色
    * Body: { voice_id, provider?, provider_voice_id?, voice_source?, voice_profile_id?, tts_model?, intent_defaults? }
    */
-  upsertVoiceBinding(req, res) {
+  async upsertVoiceBinding(req, res) {
     try {
       const { bookId, character } = req.params;
       const {
@@ -305,7 +307,7 @@ class CharacterController {
         return res.status(400).json({ error: 'voice_id or voice_profile_id is required' });
       }
 
-      characterVoiceBindingRepository.upsert(bookId, character, {
+      await characterVoiceBindingRepository.upsert(bookId, character, {
         voice_id: resolvedVoiceId,
         provider,
         provider_voice_id: provider_voice_id || (voice_id && !String(voice_id).startsWith('profile:') ? voice_id : null),
@@ -324,10 +326,10 @@ class CharacterController {
    * DELETE /api/books/:bookId/voice-bindings/:character
    * 解绑角色音色
    */
-  deleteVoiceBinding(req, res) {
+  async deleteVoiceBinding(req, res) {
     try {
       const { bookId, character } = req.params;
-      const success = characterVoiceBindingRepository.delete(bookId, character);
+      const success = await characterVoiceBindingRepository.delete(bookId, character);
 
       if (success) {
         res.json({ message: 'Voice binding deleted successfully' });

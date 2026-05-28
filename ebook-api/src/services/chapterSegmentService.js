@@ -62,15 +62,15 @@ function splitContentIntoSegments(content = '') {
   return segments;
 }
 
-function ensureSegmentsForChapter(chapter) {
-  let segments = chapterSegmentRepository.findByChapterId(chapter.id);
+async function ensureSegmentsForChapter(chapter) {
+  let segments = await chapterSegmentRepository.findByChapterId(chapter.id);
   if (segments.length > 0) return segments;
 
   const generated = splitContentIntoSegments(chapter.content || '');
   if (generated.length === 0) return [];
-  chapterSegmentRepository.createMany(chapter.id, generated);
-  segments = chapterSegmentRepository.findByChapterId(chapter.id);
-  backfillDialogueSegmentIds(chapter.id, segments);
+  await chapterSegmentRepository.createMany(chapter.id, generated);
+  segments = await chapterSegmentRepository.findByChapterId(chapter.id);
+  await backfillDialogueSegmentIds(chapter.id, segments);
   return chapterSegmentRepository.findByChapterId(chapter.id);
 }
 
@@ -93,19 +93,19 @@ function findBestSegmentForText(segments, text) {
     null;
 }
 
-function backfillDialogueSegmentIds(chapterId, segments) {
-  const dialogues = dialogueRepository.findByChapterId(chapterId);
+async function backfillDialogueSegmentIds(chapterId, segments) {
+  const dialogues = await dialogueRepository.findByChapterId(chapterId);
   for (const dialogue of dialogues) {
     if (dialogue.segment_id) continue;
     const segment = findBestSegmentForRange(segments, dialogue.char_start, dialogue.char_end) ||
       findBestSegmentForText(segments, dialogue.content);
     if (segment) {
-      dialogueRepository.update(dialogue.id, {
+      await dialogueRepository.update(dialogue.id, {
         segment_id: segment.id,
         annotation_status: dialogue.source === 'manual' ? 'manual' : 'ai'
       });
       if (dialogue.source !== 'narrator') {
-        chapterSegmentRepository.updateType(segment.id, 'dialogue');
+        await chapterSegmentRepository.updateType(segment.id, 'dialogue');
       }
     }
   }

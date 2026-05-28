@@ -3,6 +3,8 @@ const path = require('path');
 const readline = require('readline');
 const EPub = require('epub2').EPub;
 const { bookRepository, chapterRepository } = require('../repositories');
+const storageService = require('./storage/storageService');
+const { bookSourceKey } = require('./storage/keyBuilder');
 
 class ParserService {
   async processUpload(filePath, originalName) {
@@ -28,20 +30,28 @@ class ParserService {
       }
 
       // Save to database
-      const bookId = bookRepository.create({ title, format: bookFormat });
+      const bookId = await bookRepository.create({ title, format: bookFormat });
+      const sourceKey = bookSourceKey(bookId, originalName);
+      await storageService.putObject(sourceKey, fs.readFileSync(filePath), {
+        contentType: 'application/octet-stream',
+        entityType: 'book_source',
+        entityId: String(bookId),
+        metadata: { originalName }
+      });
       
       const chaptersToSave = chapters.map(ch => ({
         ...ch,
         book_id: bookId
       }));
 
-      chapterRepository.createMany(chaptersToSave);
+      await chapterRepository.createMany(chaptersToSave);
       
       return {
         bookId,
         title,
         format: bookFormat,
-        chapterCount: chapters.length
+        chapterCount: chapters.length,
+        sourceKey
       };
     } finally {
       // Clean up uploaded file

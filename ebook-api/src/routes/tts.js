@@ -1,10 +1,11 @@
 const express = require('express');
 const multer = require('multer');
+const os = require('os');
 const path = require('path');
 const ttsController = require('../controllers/ttsController');
 
 const router = express.Router();
-const upload = multer({ dest: path.join(__dirname, '../../public/uploads') });
+const upload = multer({ dest: path.join(os.tmpdir(), 'ebook-uploads') });
 
 router.get('/providers', ttsController.getProviders);
 router.get('/providers/status', ttsController.getProviderStatuses);

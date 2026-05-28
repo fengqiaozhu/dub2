@@ -1,32 +1,33 @@
-const SqliteBookRepository = require('./sqlite/SqliteBookRepository');
-const SqliteChapterRepository = require('./sqlite/SqliteChapterRepository');
-const SqliteChapterSegmentRepository = require('./sqlite/SqliteChapterSegmentRepository');
-const SqliteChapterCharacterRepository = require('./sqlite/SqliteChapterCharacterRepository');
-const SqliteDialogueRepository = require('./sqlite/SqliteDialogueRepository');
-const SqliteBookCharacterRepository = require('./sqlite/SqliteBookCharacterRepository');
-const SqliteCharacterVoiceBindingRepository = require('./sqlite/SqliteCharacterVoiceBindingRepository');
-const SqliteChapterAudioExportRepository = require('./sqlite/SqliteChapterAudioExportRepository');
-const SqliteChapterAudioSkipRangeRepository = require('./sqlite/SqliteChapterAudioSkipRangeRepository');
-const SqliteVoiceProfileRepository = require('./sqlite/SqliteVoiceProfileRepository');
-const SqliteProviderVoiceRepository = require('./sqlite/SqliteProviderVoiceRepository');
-const SqliteVoiceFavoriteRepository = require('./sqlite/SqliteVoiceFavoriteRepository');
+const {
+  BookCharacterRepository,
+  BookRepository,
+  ChapterAudioExportRepository,
+  ChapterAudioSkipRangeRepository,
+  ChapterCharacterRepository,
+  ChapterRepository,
+  ChapterSegmentRepository,
+  CharacterVoiceBindingRepository,
+  DialogueRepository,
+  JobRepository,
+  ProviderVoiceRepository,
+  StorageObjectRepository,
+  VoiceFavoriteRepository,
+  VoiceProfileRepository
+} = require('./postgres/repositories');
 
-// Future proofing: If we change DB, we just change the instantiation here
-// based on env variables (e.g. process.env.DB_TYPE === 'mongodb')
-
-const repositories = {
-  bookRepository: new SqliteBookRepository(),
-  chapterRepository: new SqliteChapterRepository(),
-  chapterSegmentRepository: new SqliteChapterSegmentRepository(),
-  chapterCharacterRepository: new SqliteChapterCharacterRepository(),
-  dialogueRepository: new SqliteDialogueRepository(),
-  bookCharacterRepository: new SqliteBookCharacterRepository(),
-  characterVoiceBindingRepository: new SqliteCharacterVoiceBindingRepository(),
-  chapterAudioExportRepository: new SqliteChapterAudioExportRepository(),
-  chapterAudioSkipRangeRepository: new SqliteChapterAudioSkipRangeRepository(),
-  voiceProfileRepository: new SqliteVoiceProfileRepository(),
-  providerVoiceRepository: new SqliteProviderVoiceRepository(),
-  voiceFavoriteRepository: new SqliteVoiceFavoriteRepository(),
+module.exports = {
+  bookRepository: new BookRepository(),
+  chapterRepository: new ChapterRepository(),
+  chapterSegmentRepository: new ChapterSegmentRepository(),
+  chapterCharacterRepository: new ChapterCharacterRepository(),
+  dialogueRepository: new DialogueRepository(),
+  bookCharacterRepository: new BookCharacterRepository(),
+  characterVoiceBindingRepository: new CharacterVoiceBindingRepository(),
+  chapterAudioExportRepository: new ChapterAudioExportRepository(),
+  chapterAudioSkipRangeRepository: new ChapterAudioSkipRangeRepository(),
+  voiceProfileRepository: new VoiceProfileRepository(),
+  providerVoiceRepository: new ProviderVoiceRepository(),
+  voiceFavoriteRepository: new VoiceFavoriteRepository(),
+  jobRepository: new JobRepository(),
+  storageObjectRepository: new StorageObjectRepository(),
 };
-
-module.exports = repositories;

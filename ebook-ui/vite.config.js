@@ -16,11 +16,7 @@ export default defineConfig({
                 target: 'http://localhost:13000',
                 changeOrigin: true
             },
-            '/audio': {
-                target: 'http://localhost:13000',
-                changeOrigin: true
-            },
-            '/covers': {
+            '/media': {
                 target: 'http://localhost:13000',
                 changeOrigin: true
             }

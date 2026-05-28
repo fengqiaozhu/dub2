@@ -6,6 +6,7 @@ const axios = require('axios');
 const { randomUUID } = require('crypto');
 const {
   computeFileHash,
+  materializeMediaUrlToTempFile,
   resolvePublicFilePath
 } = require('../services/tts/voiceProfileIdentity');
 const {
@@ -13,6 +14,8 @@ const {
   providerVoiceRepository,
   voiceFavoriteRepository
 } = require('../repositories');
+const storageService = require('../services/storage/storageService');
+const { mediaUrlForKey, voiceSampleKey } = require('../services/storage/keyBuilder');
 
 const MEDIA_PROXY_ALLOWED_HOSTS = [
   'cdn.mosi.cn',
@@ -47,35 +50,37 @@ function parseBoolean(value, defaultValue = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
-function saveVoiceSample(file, fields = {}) {
-  const sampleDir = path.join(__dirname, '../../public/voice-samples');
-  fs.mkdirSync(sampleDir, { recursive: true });
-
-  const ext = path.extname(file.originalname || '') || path.extname(file.path);
-  const sampleFilename = `sample_${randomUUID()}${ext}`;
-  const samplePath = path.join(sampleDir, sampleFilename);
-  fs.copyFileSync(file.path, samplePath);
-
-  const voiceProfileId = voiceProfileRepository.create({
+async function saveVoiceSample(file, fields = {}) {
+  const buffer = file.buffer || fs.readFileSync(file.path);
+  const sampleHash = computeFileHash(buffer);
+  const voiceProfileId = await voiceProfileRepository.create({
     name: fields.name || file.originalname || '未命名音色',
     description: fields.description,
     sample_text: fields.text || fields.sample_text,
-    sample_audio_url: `/voice-samples/${sampleFilename}`,
-    sample_hash: computeFileHash(samplePath),
+    sample_audio_url: null,
+    sample_hash: sampleHash,
     language: fields.language,
     consent_status: fields.consent_status || 'unknown'
   });
+  const key = voiceSampleKey(voiceProfileId, file.originalname || file.path);
+  await storageService.putObject(key, buffer, {
+    contentType: file.mimetype || 'audio/mpeg',
+    entityType: 'voice_profile',
+    entityId: String(voiceProfileId)
+  });
+  const sampleAudioUrl = mediaUrlForKey(key);
+  await voiceProfileRepository.updateSampleAudio(voiceProfileId, sampleAudioUrl, sampleHash);
 
   return {
     voiceProfileId,
-    samplePath,
-    sampleFilename,
-    sampleAudioUrl: `/voice-samples/${sampleFilename}`
+    samplePath: null,
+    sampleFilename: key,
+    sampleAudioUrl
   };
 }
 
 class TtsController {
-  getProviders(req, res) {
+  async getProviders(req, res) {
     try {
       res.json({ data: ttsService.getProviders() });
     } catch (error) {
@@ -107,15 +112,15 @@ class TtsController {
     }
   }
 
-  getVoiceFavorites(req, res) {
+  async getVoiceFavorites(req, res) {
     try {
-      res.json({ data: voiceFavoriteRepository.findAll() });
+      res.json({ data: await voiceFavoriteRepository.findAll() });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  saveVoiceFavorite(req, res) {
+  async saveVoiceFavorite(req, res) {
     try {
       const {
         provider,
@@ -129,7 +134,7 @@ class TtsController {
         return res.status(400).json({ error: 'provider_voice_id or voice_profile_id is required' });
       }
 
-      const favorite = voiceFavoriteRepository.upsert({
+      const favorite = await voiceFavoriteRepository.upsert({
         provider,
         provider_voice_id,
         voice_source,
@@ -142,9 +147,9 @@ class TtsController {
     }
   }
 
-  deleteVoiceFavorite(req, res) {
+  async deleteVoiceFavorite(req, res) {
     try {
-      const deleted = voiceFavoriteRepository.delete({
+      const deleted = await voiceFavoriteRepository.delete({
         provider: req.query.provider,
         provider_voice_id: req.query.provider_voice_id,
         voice_source: req.query.voice_source,
@@ -197,12 +202,12 @@ class TtsController {
     }
   }
 
-  getVoiceProfiles(req, res) {
+  async getVoiceProfiles(req, res) {
     try {
       const limit = parseInt(req.query.limit, 10) || 100;
       const offset = parseInt(req.query.offset, 10) || 0;
       const search = req.query.search || '';
-      const profiles = voiceProfileRepository.findAll({ limit, offset, search });
+      const profiles = await voiceProfileRepository.findAll({ limit, offset, search });
       res.json({ data: profiles });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -212,12 +217,12 @@ class TtsController {
   async deleteVoiceProfile(req, res) {
     try {
       const voiceProfileId = req.params.id;
-      const profile = voiceProfileRepository.findById(voiceProfileId);
+      const profile = await voiceProfileRepository.findById(voiceProfileId);
       if (!profile) {
         return res.status(404).json({ error: 'Voice profile not found' });
       }
 
-      const providerVoices = providerVoiceRepository.findByProfileId(voiceProfileId);
+      const providerVoices = await providerVoiceRepository.findByProfileId(voiceProfileId);
       const remoteResults = [];
       for (const voice of providerVoices) {
         const result = await ttsService.deleteVoice({
@@ -231,19 +236,19 @@ class TtsController {
         });
       }
 
-      voiceProfileRepository.delete(voiceProfileId);
+      await voiceProfileRepository.delete(voiceProfileId);
       res.json({ data: { deleted: true, remote: remoteResults } });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  getProviderVoices(req, res) {
+  async getProviderVoices(req, res) {
     try {
       const limit = parseInt(req.query.limit, 10) || 100;
       const offset = parseInt(req.query.offset, 10) || 0;
       const { provider, kind, status } = req.query;
-      const voices = providerVoiceRepository.findAll({ provider, kind, status, limit, offset });
+      const voices = await providerVoiceRepository.findAll({ provider, kind, status, limit, offset });
       res.json({ data: voices });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -257,7 +262,7 @@ class TtsController {
       }
 
       const text = req.body.text || req.body.sample_text || '';
-      const saved = saveVoiceSample(req.file, { ...req.body, text });
+      const saved = await saveVoiceSample(req.file, { ...req.body, text });
       if (fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
@@ -267,19 +272,23 @@ class TtsController {
       let jobId = null;
 
       if (shouldClone && cloneProvider) {
+        const sampleFile = await materializeMediaUrlToTempFile(saved.sampleAudioUrl, req.file.originalname || saved.sampleFilename);
+        if (!sampleFile) {
+          return res.status(400).json({ error: 'Voice profile sample audio is missing' });
+        }
         jobId = await jobManager.startJob(
           'tts_clone',
           saved.voiceProfileId,
           'ttsCreateVoiceJob.js',
           {
             provider: cloneProvider,
-            filePath: saved.samplePath,
+            filePath: sampleFile.filePath,
             fileName: req.file.originalname || saved.sampleFilename,
             text,
             voice_profile_id: saved.voiceProfileId,
             name: req.body.name || req.file.originalname,
             description: req.body.description,
-            cleanupFile: false
+            cleanupFile: sampleFile.cleanup
           }
         );
       }
@@ -304,13 +313,13 @@ class TtsController {
   async cloneVoiceProfile(req, res) {
     try {
       const voiceProfileId = req.params.id;
-      const profile = voiceProfileRepository.findById(voiceProfileId);
+      const profile = await voiceProfileRepository.findById(voiceProfileId);
       if (!profile) {
         return res.status(404).json({ error: 'Voice profile not found' });
       }
 
       const provider = req.body.provider || req.query.provider || 'mosi';
-      const existingVoice = providerVoiceRepository.findActiveByProfileId(voiceProfileId, provider);
+      const existingVoice = await providerVoiceRepository.findActiveByProfileId(voiceProfileId, provider);
       if (existingVoice) {
         return res.status(200).json({
           message: 'Voice profile is already cloned to provider',
@@ -324,8 +333,8 @@ class TtsController {
         });
       }
 
-      const filePath = resolvePublicFilePath(profile.sample_audio_url);
-      if (!filePath || !fs.existsSync(filePath)) {
+      const sampleFile = await materializeMediaUrlToTempFile(profile.sample_audio_url, profile.sample_audio_url || 'sample.wav');
+      if (!sampleFile) {
         return res.status(400).json({ error: 'Voice profile sample audio is missing' });
       }
 
@@ -335,13 +344,13 @@ class TtsController {
         'ttsCreateVoiceJob.js',
         {
           provider,
-          filePath,
-          fileName: path.basename(filePath),
+          filePath: sampleFile.filePath,
+          fileName: path.basename(sampleFile.filePath),
           text: req.body.text || profile.sample_text || '',
           voice_profile_id: voiceProfileId,
           name: req.body.name || profile.name,
           description: req.body.description || profile.description,
-          cleanupFile: false
+          cleanupFile: sampleFile.cleanup
         }
       );
 
@@ -371,7 +380,7 @@ class TtsController {
       let voiceProfileId = req.body.voice_profile_id || null;
 
       if (!voiceProfileId && req.body.save_profile !== 'false') {
-        voiceProfileId = saveVoiceSample(req.file, { ...req.body, text }).voiceProfileId;
+        voiceProfileId = (await saveVoiceSample(req.file, { ...req.body, text })).voiceProfileId;
       }
 
       const jobId = await jobManager.startJob(
@@ -385,7 +394,8 @@ class TtsController {
           text,
           voice_profile_id: voiceProfileId,
           name: req.body.name || req.file.originalname,
-          description: req.body.description
+          description: req.body.description,
+          cleanupFile: true
         }
       );
 

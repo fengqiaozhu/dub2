@@ -1,9 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-
-// Ensure database is initialized before starting
-require('./src/repositories/sqlite/database');
+const { initSchema } = require('./src/repositories/postgres/schema');
 
 const bookRoutes = require('./src/routes/books');
 const chapterRoutes = require('./src/routes/chapters');
@@ -13,6 +11,8 @@ const annotationRoutes = require('./src/routes/annotations');
 const mosiRoutes = require('./src/routes/mosi');
 const ttsRoutes = require('./src/routes/tts');
 const jobRoutes = require('./src/routes/jobs');
+const mediaRoutes = require('./src/routes/media');
+const healthRoutes = require('./src/routes/health');
 const jobManager = require('./src/services/jobManager');
 const path = require('path');
 
@@ -23,9 +23,8 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Static file hosting for generated audio
-app.use(express.static(path.join(__dirname, 'public')));
-
+app.use('/media', mediaRoutes);
+app.use('/api/health', healthRoutes);
 app.use('/api/books', bookRoutes);
 app.use('/api/chapters', chapterRoutes);
 app.use('/api/chapter-characters', chapterCharacterRoutes);
@@ -38,6 +37,7 @@ app.use('/api/jobs', jobRoutes);
 
 (async () => {
   try {
+    await initSchema();
     // Start Bree job manager
     await jobManager.start();
     

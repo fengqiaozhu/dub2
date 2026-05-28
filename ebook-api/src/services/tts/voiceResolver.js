@@ -18,7 +18,7 @@ function isActive(status) {
   return ['ACTIVE', 'DONE'].includes(normalizeStatus(status));
 }
 
-function resolveBinding(binding, options = {}) {
+async function resolveBinding(binding, options = {}) {
   const provider = binding.provider || binding.preferred_provider || 'mosi';
   const rawProviderVoiceId = binding.provider_voice_id || (
     binding.voice_id && !String(binding.voice_id).startsWith('profile:') ? binding.voice_id : null
@@ -28,7 +28,7 @@ function resolveBinding(binding, options = {}) {
     : null;
 
   if (providerVoiceId) {
-    const providerVoice = providerVoiceRepository.findByProviderVoiceId(provider, providerVoiceId);
+    const providerVoice = await providerVoiceRepository.findByProviderVoiceId(provider, providerVoiceId);
     if (binding.voice_source === 'system') {
       return {
         ready: true,
@@ -79,7 +79,7 @@ function resolveBinding(binding, options = {}) {
   }
 
   if (binding.voice_profile_id) {
-    const providerVoice = providerVoiceRepository.findActiveByProfileId(binding.voice_profile_id, provider);
+    const providerVoice = await providerVoiceRepository.findActiveByProfileId(binding.voice_profile_id, provider);
     if (!providerVoice) {
       return {
         ready: false,

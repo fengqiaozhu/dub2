@@ -16,7 +16,7 @@ request.interceptors.response.use(
 );
 
 /**
- * 将后端返回的相对路径（如 /audio/xxx.wav）转为完整 URL。
+ * 将后端返回的相对媒体路径（如 /media/xxx）转为完整 URL。
  * 开发环境下默认指向本项目 API 端口，生产环境下使用当前 origin。
  */
 export const toMediaUrl = (relativePath: string): string => {

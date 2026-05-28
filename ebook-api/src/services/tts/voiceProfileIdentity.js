@@ -1,6 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
+const { randomUUID } = require('crypto');
+const storageService = require('../storage/storageService');
+const { keyFromMediaUrl } = require('../storage/keyBuilder');
 
 const MARKER_PATTERN = /\bvf[:_](\d+)[:_]([a-f0-9]{8})\b/i;
 
@@ -13,9 +17,9 @@ function resolvePublicFilePath(relativeUrl) {
   return filePath;
 }
 
-function computeFileHash(filePath) {
+function computeFileHash(filePathOrBuffer) {
   const hash = crypto.createHash('sha256');
-  hash.update(fs.readFileSync(filePath));
+  hash.update(Buffer.isBuffer(filePathOrBuffer) ? filePathOrBuffer : fs.readFileSync(filePathOrBuffer));
   return hash.digest('hex');
 }
 
@@ -87,17 +91,38 @@ function isMarkerMatch(profile, markerInfo) {
   return String(profile.sample_hash).toLowerCase().startsWith(markerInfo.sample_hash_prefix);
 }
 
-function ensureProfileSampleHash(profile, voiceProfileRepository) {
+async function ensureProfileSampleHash(profile, voiceProfileRepository) {
   if (!profile) return null;
   if (profile.sample_hash) return profile.sample_hash;
 
-  const filePath = resolvePublicFilePath(profile.sample_audio_url);
-  if (!filePath || !fs.existsSync(filePath)) return null;
+  let buffer = null;
+  const key = keyFromMediaUrl(profile.sample_audio_url);
+  if (key) {
+    buffer = await storageService.getObjectBuffer(key);
+  } else {
+    const filePath = resolvePublicFilePath(profile.sample_audio_url);
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    buffer = fs.readFileSync(filePath);
+  }
 
-  const sampleHash = computeFileHash(filePath);
-  voiceProfileRepository.updateSampleHash(profile.id, sampleHash);
+  const sampleHash = computeFileHash(buffer);
+  await voiceProfileRepository.updateSampleHash(profile.id, sampleHash);
   profile.sample_hash = sampleHash;
   return sampleHash;
+}
+
+async function materializeMediaUrlToTempFile(mediaUrl, filename = 'sample.wav') {
+  const key = keyFromMediaUrl(mediaUrl);
+  if (!key) {
+    const localPath = resolvePublicFilePath(mediaUrl);
+    if (localPath && fs.existsSync(localPath)) return { filePath: localPath, cleanup: false };
+    return null;
+  }
+  const buffer = await storageService.getObjectBuffer(key);
+  const ext = path.extname(filename) || path.extname(key) || '.wav';
+  const filePath = path.join(os.tmpdir(), `ebook-media-${randomUUID()}${ext}`);
+  fs.writeFileSync(filePath, buffer);
+  return { filePath, cleanup: true };
 }
 
 module.exports = {
@@ -107,6 +132,7 @@ module.exports = {
   ensureProfileSampleHash,
   extractMarker,
   isMarkerMatch,
+  materializeMediaUrlToTempFile,
   parseMarker,
   resolvePublicFilePath
 };

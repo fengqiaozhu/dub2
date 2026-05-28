@@ -3,17 +3,15 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const storageService = require('./storage/storageService');
+const { mediaUrlForKey } = require('./storage/keyBuilder');
 
 class MosiService {
   constructor() {
     this.baseUrl = process.env.MOSI_BASE_URL || 'https://studio.mosi.cn';
     this.apiKey = process.env.MOSI_API_KEY;
     
-    // Ensure public audio directory exists
-    this.audioDir = path.join(__dirname, '../../public/audio');
-    if (!fs.existsSync(this.audioDir)) {
-      fs.mkdirSync(this.audioDir, { recursive: true });
-    }
+    this.audioDir = null;
   }
 
   getHeaders(isFormData = false) {
@@ -214,16 +212,20 @@ class MosiService {
         throw new Error('No audio data returned from Mosi');
       }
 
-      // Convert Base64 to binary buffer and save as .wav
       const audioBuffer = Buffer.from(audioDataB64, 'base64');
-      const filename = `tts_${uuidv4()}.wav`;
-      const filePath = path.join(this.audioDir, filename);
+      const key = options.storage?.key || `jobs/tts/${uuidv4()}.wav`;
+      await storageService.putObject(key, audioBuffer, {
+        contentType: 'audio/wav',
+        entityType: options.storage?.entityType || 'tts_audio',
+        entityId: options.storage?.entityId || null,
+        metadata: {
+          provider: 'mosi',
+          voice_id: voiceId
+        }
+      });
       
-      fs.writeFileSync(filePath, audioBuffer);
-      
-      // We return the local URL relative path and the duration
       return {
-        url: `/audio/${filename}`,
+        url: mediaUrlForKey(key),
         duration_s: response.data.duration_s,
         usage: response.data.usage,
         meta_info: response.data.meta_info

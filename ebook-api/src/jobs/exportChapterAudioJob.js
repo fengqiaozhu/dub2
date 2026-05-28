@@ -4,27 +4,23 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
-const SqliteChapterRepository = require('../repositories/sqlite/SqliteChapterRepository');
-const SqliteDialogueRepository = require('../repositories/sqlite/SqliteDialogueRepository');
-const SqliteChapterAudioExportRepository = require('../repositories/sqlite/SqliteChapterAudioExportRepository');
-const SqliteChapterAudioSkipRangeRepository = require('../repositories/sqlite/SqliteChapterAudioSkipRangeRepository');
 const {
-  publicDir,
+  chapterRepository,
+  dialogueRepository,
+  chapterAudioExportRepository,
+  chapterAudioSkipRangeRepository
+} = require('../repositories');
+const {
   buildChapterAudioItems,
   getChapterAudioItems,
   computeChapterAudioHash
 } = require('../services/chapterAudioState');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
-
-const chapterRepository = new SqliteChapterRepository();
-const dialogueRepository = new SqliteDialogueRepository();
-const chapterAudioExportRepository = new SqliteChapterAudioExportRepository();
-const chapterAudioSkipRangeRepository = new SqliteChapterAudioSkipRangeRepository();
+const storageService = require('../services/storage/storageService');
+const { chapterExportKey, mediaUrlForKey } = require('../services/storage/keyBuilder');
 
 const { jobId, jobName, params } = workerData;
 const { chapterId } = params;
-
-const exportsDir = path.join(publicDir, 'exports');
 
 const escapeConcatPath = (filePath) => filePath.replace(/'/g, "'\\''");
 
@@ -48,18 +44,19 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
 
 (async () => {
   let listPath = null;
+  let tempDir = null;
 
   try {
-    const chapter = chapterRepository.findById(chapterId);
+    const chapter = await chapterRepository.findById(chapterId);
     if (!chapter) {
       throw new Error(`Chapter ${chapterId} not found`);
     }
 
     parentPort.postMessage({ type: 'PROGRESS', jobId, value: 10 });
 
-    const dialogues = dialogueRepository.findByChapterId(chapterId);
-    const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
-    const plan = dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
+    const dialogues = await dialogueRepository.findByChapterId(chapterId);
+    const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(chapterId);
+    const plan = await dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
     const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
     const currentIds = new Set(
       buildChapterAudioItems(chapter, dialogues, taskMap, skipRanges)
@@ -74,13 +71,21 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
 
     const sourceHash = computeChapterAudioHash(audioItems);
 
-    fs.mkdirSync(exportsDir, { recursive: true });
-    const outputName = `chapter_${chapterId}_${Date.now()}.wav`;
-    const outputPath = path.join(exportsDir, outputName);
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `ebook-export-${jobId}-`));
+    const outputPath = path.join(tempDir, 'merged.wav');
     listPath = path.join(os.tmpdir(), `ebook_concat_${jobId}.txt`);
 
+    for (let index = 0; index < audioItems.length; index += 1) {
+      const item = audioItems[index];
+      const ext = path.extname(item.objectKey) || '.wav';
+      const filePath = path.join(tempDir, `${String(index + 1).padStart(4, '0')}${ext}`);
+      const buffer = await storageService.getObjectBuffer(item.objectKey);
+      fs.writeFileSync(filePath, buffer);
+      item.localPath = filePath;
+    }
+
     const listContent = audioItems
-      .map((item) => `file '${escapeConcatPath(item.audioPath)}'`)
+      .map((item) => `file '${escapeConcatPath(item.localPath)}'`)
       .join('\n');
     fs.writeFileSync(listPath, listContent);
 
@@ -97,9 +102,18 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
       outputPath
     ]);
 
-    chapterAudioExportRepository.create({
+    const key = chapterExportKey(chapter.book_id, chapterId);
+    const outputBuffer = fs.readFileSync(outputPath);
+    await storageService.putObject(key, outputBuffer, {
+      contentType: 'audio/wav',
+      entityType: 'chapter_export',
+      entityId: String(chapterId)
+    });
+    const audioUrl = mediaUrlForKey(key);
+
+    await chapterAudioExportRepository.create({
       chapter_id: chapterId,
-      audio_url: `/exports/${outputName}`,
+      audio_url: audioUrl,
       format: 'wav',
       source_hash: sourceHash,
       item_count: audioItems.length
@@ -111,7 +125,7 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
       jobId,
       jobName,
       result: {
-        url: `/exports/${outputName}`,
+        url: audioUrl,
         chapterId,
         itemCount: audioItems.length,
         format: 'wav'
@@ -129,6 +143,9 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
   } finally {
     if (listPath && fs.existsSync(listPath)) {
       fs.unlinkSync(listPath);
+    }
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }
 })();

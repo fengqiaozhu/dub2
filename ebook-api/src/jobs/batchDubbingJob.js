@@ -1,13 +1,13 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 const { parentPort, workerData } = require('worker_threads');
 const ttsService = require('../services/tts');
-const SqliteDialogueRepository = require('../repositories/sqlite/SqliteDialogueRepository');
-const SqliteChapterAudioSkipRangeRepository = require('../repositories/sqlite/SqliteChapterAudioSkipRangeRepository');
+const {
+  dialogueRepository,
+  chapterAudioSkipRangeRepository
+} = require('../repositories');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
 const { isAudioSkipped, normalizeDialogueContent } = require('../services/chapterAudioState');
-
-const dialogueRepository = new SqliteDialogueRepository();
-const chapterAudioSkipRangeRepository = new SqliteChapterAudioSkipRangeRepository();
+const { dialogueAudioKey } = require('../services/storage/keyBuilder');
 
 const { jobId, jobName, params } = workerData;
 const { chapterId, items, force = false } = params;
@@ -18,7 +18,7 @@ const { chapterId, items, force = false } = params;
 
     let taskItems = items;
     if (!taskItems || taskItems.length === 0) {
-      const plan = dubbingPlanner.createPlan(chapterId, { includeCompleted: force });
+      const plan = await dubbingPlanner.createPlan(chapterId, { includeCompleted: force });
       if (!plan.ready) {
         const blocked = plan.roles
           .filter((role) => !role.ready)
@@ -42,7 +42,7 @@ const { chapterId, items, force = false } = params;
     let dubbedCount = 0;
     let skippedCount = 0;
     let errorCount = 0;
-    const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
+    const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(chapterId);
 
     for (let i = 0; i < total; i++) {
       const item = taskItems[i];
@@ -50,7 +50,7 @@ const { chapterId, items, force = false } = params;
       const speakableText = normalizeDialogueContent(text);
 
       // Ensure idempotency: Double check DB right before synthesis just in case
-      const currentDialogue = dialogueRepository.findById(dialogueId);
+      const currentDialogue = await dialogueRepository.findById(dialogueId);
       if (!speakableText) {
         console.log(`[batchDubbingJob] Dialogue ${dialogueId} has blank text, skipping.`);
         skippedCount++;
@@ -80,12 +80,19 @@ const { chapterId, items, force = false } = params;
           text: speakableText,
           voice_id: voiceId,
           model,
-          options: options || {},
+          options: {
+            ...(options || {}),
+            storage: {
+              key: dialogueAudioKey(currentDialogue.book_id, currentDialogue.chapter_id, dialogueId, '.wav'),
+              entityType: 'dialogue_audio',
+              entityId: String(dialogueId)
+            }
+          },
           intent
         });
         
         // Save to DB
-        dialogueRepository.update(dialogueId, {
+        await dialogueRepository.update(dialogueId, {
           audio_url: result.url,
           audio_duration: result.duration_s,
           audio_source_hash: sourceHash,
@@ -96,7 +103,7 @@ const { chapterId, items, force = false } = params;
       } catch (err) {
         console.error(`[batchDubbingJob] Error synthesizing dialogue ${dialogueId}:`, err.message);
         errorCount++;
-        dialogueRepository.update(dialogueId, {
+        await dialogueRepository.update(dialogueId, {
           audio_error: err.message,
           audio_status: 'failed'
         });

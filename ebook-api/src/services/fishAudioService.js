@@ -4,6 +4,8 @@ const { randomUUID } = require('crypto');
 const { createReadStream } = require('fs');
 const axios = require('axios');
 const { appendMarker } = require('./tts/voiceProfileIdentity');
+const storageService = require('./storage/storageService');
+const { mediaUrlForKey } = require('./storage/keyBuilder');
 
 const DEFAULT_MODEL = process.env.FISH_DEFAULT_MODEL || 's2-pro';
 const DEFAULT_FORMAT = process.env.FISH_DEFAULT_FORMAT || 'mp3';
@@ -40,8 +42,6 @@ function isRetryableBackendError(error) {
 
 class FishAudioService {
   constructor() {
-    this.audioDir = path.join(__dirname, '../../public/audio');
-    fs.mkdirSync(this.audioDir, { recursive: true });
     this.client = null;
   }
 
@@ -211,12 +211,21 @@ class FishAudioService {
 
     const buffer = Buffer.from(await new Response(audioStream).arrayBuffer());
     const ext = pickExtension(format);
-    const filename = `tts_${randomUUID()}.${ext}`;
-    const filePath = path.join(this.audioDir, filename);
-    fs.writeFileSync(filePath, buffer);
+    const key = options.storage?.key || `jobs/tts/${randomUUID()}.${ext}`;
+    await storageService.putObject(key, buffer, {
+      contentType: ext === 'mp3' ? 'audio/mpeg' : `audio/${ext}`,
+      entityType: options.storage?.entityType || 'tts_audio',
+      entityId: options.storage?.entityId || null,
+      metadata: {
+        provider: 'fish_audio',
+        voice_id: voiceId,
+        backend,
+        format
+      }
+    });
 
     return {
-      url: `/audio/${filename}`,
+      url: mediaUrlForKey(key),
       duration_s: null,
       usage: null,
       meta_info: {

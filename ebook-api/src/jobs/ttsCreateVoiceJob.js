@@ -17,10 +17,10 @@ const { jobId, jobName, params } = workerData;
   try {
     console.log(`[ttsCreateVoiceJob] Start creating ${params.provider || 'mosi'} voice clone for job ${jobId}`);
     const profile = params.voice_profile_id
-      ? voiceProfileRepository.findById(params.voice_profile_id)
+      ? await voiceProfileRepository.findById(params.voice_profile_id)
       : null;
     if (profile) {
-      ensureProfileSampleHash(profile, voiceProfileRepository);
+      await ensureProfileSampleHash(profile, voiceProfileRepository);
     }
     const marker = profile ? buildMarker(profile) : null;
 
@@ -39,7 +39,7 @@ const { jobId, jobName, params } = workerData;
     });
 
     if (result.voice_id || result.voiceId) {
-      providerVoiceRepository.upsert({
+      await providerVoiceRepository.upsert({
         voice_profile_id: params.voice_profile_id,
         provider: params.provider || 'mosi',
         provider_voice_id: result.voice_id || result.voiceId,

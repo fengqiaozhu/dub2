@@ -1,10 +1,10 @@
-const jobRepository = require('../repositories/sqlite/SqliteJobRepository');
+const { jobRepository } = require('../repositories');
 
 class JobController {
   async getJob(req, res) {
     try {
       const jobId = req.params.id;
-      const job = jobRepository.findById(jobId);
+      const job = await jobRepository.findById(jobId);
       
       if (!job) {
         return res.status(404).json({ error: 'Job not found' });
@@ -29,7 +29,7 @@ class JobController {
         offset: offset ? parseInt(offset, 10) : undefined
       };
 
-      const jobs = jobRepository.findAll(filters);
+      const jobs = await jobRepository.findAll(filters);
       
       res.json({ data: jobs });
     } catch (error) {

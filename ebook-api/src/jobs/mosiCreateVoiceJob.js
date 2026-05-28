@@ -21,7 +21,7 @@ const { filePath, text } = params;
     });
 
     if (result.voice_id || result.voiceId) {
-      providerVoiceRepository.upsert({
+      await providerVoiceRepository.upsert({
         provider: 'mosi',
         provider_voice_id: result.voice_id || result.voiceId,
         provider_model: result.model,

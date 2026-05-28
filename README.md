@@ -1,64 +1,73 @@
-# Dub2 Ebook MVP
+# Dub2 Ebook
 
-Dub2 Ebook is a local-first ebook dubbing MVP. It combines a Vue workspace for book, voice, and chapter operations with an Express API that parses ebooks, stores chapter/dialogue state in SQLite, and generates or exports TTS audio.
+Dub2 Ebook is an ebook dubbing workspace. It combines a Vue workspace with an Express API that stores metadata in PostgreSQL, stores media in S3-compatible object storage, parses ebooks, analyzes chapters, generates TTS audio, and exports chapter audio.
 
 ## Project Structure
 
 ```text
 .
-├── ebook-api/   # Express API, SQLite repositories, parsing, AI/TTS services
+├── ebook-api/   # Express API, PostgreSQL repositories, S3 storage, parsing, AI/TTS services
 └── ebook-ui/    # Vue 3 + Vite frontend
 ```
-
-## Features
-
-- Import and manage ebook metadata and chapters.
-- Analyze chapter content into characters, dialogue, annotations, and segments.
-- Bind book characters to system, provider, or cloned voices.
-- Generate dialogue audio and track background jobs.
-- Preview chapter dubbing and export chapter audio.
-- Manage provider voices through the TTS/Mosi integrations.
 
 ## Requirements
 
 - Node.js 20+
 - npm
-- Mosi API credentials for provider TTS features
-- DeepSeek-compatible API credentials for AI analysis features
+- PostgreSQL 16+
+- S3-compatible storage such as MinIO, AWS S3, R2, or OSS
+- Mosi/Fish/DeepSeek credentials for provider features
 
 ## Environment
-
-Create the API environment file from the example:
 
 ```bash
 cd ebook-api
 cp .env.example .env
 ```
 
-Then fill in the credentials:
+Important settings:
 
 ```dotenv
 PORT=13000
-DB_PATH=database.sqlite
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
-DEEPSEEK_API_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-pro
-DEEPSEEK_TIMEOUT=60000
-MOSI_API_KEY=your_mosi_api_key_here
-MOSI_BASE_URL=https://studio.mosi.cn
+DATABASE_URL=postgres://ebook:ebook@localhost:5432/ebook
+S3_ENDPOINT=http://localhost:9000
+S3_REGION=us-east-1
+S3_BUCKET=ebook
+S3_ACCESS_KEY_ID=ebook
+S3_SECRET_ACCESS_KEY=ebook-secret
+S3_FORCE_PATH_STYLE=true
+```
+
+## Run With Docker
+
+```bash
+docker compose up --build
+```
+
+Default URLs:
+
+- UI: `http://localhost:13001`
+- API: `http://localhost:13000`
+- MinIO Console: `http://localhost:9001`
+
+Health check:
+
+```bash
+curl http://localhost:13000/api/health
 ```
 
 ## Run Locally
 
-Install and start the API:
+Start PostgreSQL and S3-compatible storage first, then:
 
 ```bash
 cd ebook-api
 npm install
+npm run schema:init
 npm start
 ```
 
-In another terminal, install and start the UI:
+In another terminal:
 
 ```bash
 cd ebook-ui
@@ -66,42 +75,29 @@ npm install
 npm run dev
 ```
 
-The default local URLs are:
+The Vite dev server proxies `/api` and `/media` to the API server.
 
-- API: `http://localhost:13000`
-- UI: `http://localhost:13001`
+## Backup And Restore
 
-The Vite dev server proxies `/api`, `/audio`, and `/covers` to the API server.
-
-## Build
+Create a self-contained backup:
 
 ```bash
-cd ebook-ui
-npm run build
+cd ebook-api
+npm run backup -- ./backups/backup-name
 ```
 
-## Local Data
+Restore into a fresh deployment:
 
-Runtime data is intentionally not committed:
+```bash
+cd ebook-api
+npm run restore -- ./backups/backup-name
+npm run doctor
+```
 
-- SQLite database files: `database.sqlite`, `*.sqlite-wal`, `*.sqlite-shm`
-- Generated audio and exports under `ebook-api/public/`
-- Uploaded files and local logs
-- API secrets in `.env`
+The backup contains a PostgreSQL custom dump, mirrored S3 objects, and manifests. The restore path is database first, objects second, doctor verification last.
 
-Keep `.env.example` updated when adding new configuration keys.
+## Data Model
 
-## API Notes
-
-Main API groups:
-
-- `/api/books`
-- `/api/chapters`
-- `/api/chapter-characters`
-- `/api/dialogues`
-- `/api/annotations`
-- `/api/tts`
-- `/api/mosi`
-- `/api/jobs`
-
-See `ebook-api/docs/api.md` for the more detailed endpoint notes.
+- PostgreSQL stores books, chapters, dialogues, jobs, voice assets, bindings, export records, and `storage_objects`.
+- S3 stores all binary business data: source ebooks, covers, voice samples, generated dialogue audio, and chapter exports.
+- Media URLs are private API proxy paths shaped as `/media/{encoded-object-key}`.

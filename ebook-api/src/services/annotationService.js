@@ -49,25 +49,25 @@ function validateRange(chapter, charStart, charEnd) {
   }
 }
 
-function replaceOverlaps(chapter, charStart, charEnd, excludeId = null) {
-  const annotations = dialogueRepository
-    .findByChapterId(chapter.id)
+async function replaceOverlaps(chapter, charStart, charEnd, excludeId = null) {
+  const annotations = (await dialogueRepository
+    .findByChapterId(chapter.id))
     .filter((dialogue) => dialogue.source !== 'narrator')
     .filter((dialogue) => !excludeId || Number(dialogue.id) !== Number(excludeId))
     .filter((dialogue) => rangesOverlap(charStart, charEnd, dialogue.char_start, dialogue.char_end));
 
   for (const annotation of annotations) {
-    dialogueRepository.delete(annotation.id);
+    await dialogueRepository.delete(annotation.id);
   }
 }
 
-function invalidateChapterNarrationAndExport(chapterId) {
-  dialogueRepository.deleteByChapterIdAndSource(chapterId, 'narrator');
-  chapterAudioExportRepository.deleteByChapterId(chapterId);
+async function invalidateChapterNarrationAndExport(chapterId) {
+  await dialogueRepository.deleteByChapterIdAndSource(chapterId, 'narrator');
+  await chapterAudioExportRepository.deleteByChapterId(chapterId);
 }
 
-function createAnnotation(chapterId, payload, options = {}) {
-  const chapter = chapterRepository.findById(chapterId);
+async function createAnnotation(chapterId, payload, options = {}) {
+  const chapter = await chapterRepository.findById(chapterId);
   if (!chapter) throw new Error('Chapter not found');
   if (payload.type && payload.type !== 'dialogue') {
     throw new Error('Only dialogue annotations are supported');
@@ -80,9 +80,9 @@ function createAnnotation(chapterId, payload, options = {}) {
   const characterName = String(payload.character_name || '').trim();
   if (!characterName) throw new Error('character_name is required');
 
-  replaceOverlaps(chapter, charStart, charEnd, options.excludeId);
+  await replaceOverlaps(chapter, charStart, charEnd, options.excludeId);
 
-  const chapterCharacterId = chapterCharacterRepository.upsert(chapter.id, chapter.book_id, characterName);
+  const chapterCharacterId = await chapterCharacterRepository.upsert(chapter.id, chapter.book_id, characterName);
   const annotation = {
     chapter_character_id: chapterCharacterId,
     segment_id: null,
@@ -99,22 +99,22 @@ function createAnnotation(chapterId, payload, options = {}) {
 
   let id = options.updateId;
   if (id) {
-    dialogueRepository.update(id, annotation);
-    dialogueRepository.clearAudioById(id);
+    await dialogueRepository.update(id, annotation);
+    await dialogueRepository.clearAudioById(id);
   } else {
-    id = dialogueRepository.create(annotation);
+    id = await dialogueRepository.create(annotation);
   }
 
-  chapterCharacterRepository.deleteUnusedByChapterId(chapter.id);
-  bookCharacterRepository.recalculateForBook(chapter.book_id);
-  invalidateChapterNarrationAndExport(chapter.id);
+  await chapterCharacterRepository.deleteUnusedByChapterId(chapter.id);
+  await bookCharacterRepository.recalculateForBook(chapter.book_id);
+  await invalidateChapterNarrationAndExport(chapter.id);
   return dialogueRepository.findById(id);
 }
 
-function updateAnnotation(id, payload) {
-  const existing = dialogueRepository.findById(id);
+async function updateAnnotation(id, payload) {
+  const existing = await dialogueRepository.findById(id);
   if (!existing) throw new Error('Annotation not found');
-  const chapter = chapterRepository.findById(existing.chapter_id);
+  const chapter = await chapterRepository.findById(existing.chapter_id);
   if (!chapter) throw new Error('Chapter not found');
 
   const charStart = payload.char_start !== undefined ? Number(payload.char_start) : existing.char_start;
@@ -124,14 +124,14 @@ function updateAnnotation(id, payload) {
     : existing.character_name;
   if (!characterName) throw new Error('character_name is required');
   validateRange(chapter, charStart, charEnd);
-  replaceOverlaps(chapter, charStart, charEnd, id);
+  await replaceOverlaps(chapter, charStart, charEnd, id);
 
-  const chapterCharacterId = chapterCharacterRepository.upsert(chapter.id, chapter.book_id, characterName);
+  const chapterCharacterId = await chapterCharacterRepository.upsert(chapter.id, chapter.book_id, characterName);
   const annotationStatus = payload.confirmed !== undefined
     ? (payload.confirmed ? 'confirmed' : 'manual')
     : (payload.annotation_status || existing.annotation_status || 'manual');
 
-  dialogueRepository.update(id, {
+  await dialogueRepository.update(id, {
     chapter_character_id: chapterCharacterId,
     segment_id: null,
     content: getAnnotationContent(chapter, charStart, charEnd),
@@ -143,21 +143,21 @@ function updateAnnotation(id, payload) {
     updated_by: payload.updated_by ?? 'user',
     order_index: charStart
   });
-  dialogueRepository.clearAudioById(id);
+  await dialogueRepository.clearAudioById(id);
 
-  chapterCharacterRepository.deleteUnusedByChapterId(chapter.id);
-  bookCharacterRepository.recalculateForBook(chapter.book_id);
-  invalidateChapterNarrationAndExport(chapter.id);
+  await chapterCharacterRepository.deleteUnusedByChapterId(chapter.id);
+  await bookCharacterRepository.recalculateForBook(chapter.book_id);
+  await invalidateChapterNarrationAndExport(chapter.id);
   return dialogueRepository.findById(id);
 }
 
-function deleteAnnotation(id) {
-  const existing = dialogueRepository.findById(id);
+async function deleteAnnotation(id) {
+  const existing = await dialogueRepository.findById(id);
   if (!existing) throw new Error('Annotation not found');
-  dialogueRepository.delete(id);
-  chapterCharacterRepository.deleteUnusedByChapterId(existing.chapter_id);
-  bookCharacterRepository.recalculateForBook(existing.book_id);
-  invalidateChapterNarrationAndExport(existing.chapter_id);
+  await dialogueRepository.delete(id);
+  await chapterCharacterRepository.deleteUnusedByChapterId(existing.chapter_id);
+  await bookCharacterRepository.recalculateForBook(existing.book_id);
+  await invalidateChapterNarrationAndExport(existing.chapter_id);
   return existing;
 }
 

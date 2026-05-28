@@ -5,6 +5,11 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "schema:init": "node scripts/schema-init.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/restore.js",
+    "doctor": "node scripts/doctor.js",
+    "check": "find src -name '*.js' -print0 | xargs -0 -n1 node --check && find scripts -name '*.js' -print0 | xargs -0 -n1 node --check",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,10 +17,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.735.0",
     "@lingo-reader/mobi-parser": "^0.4.6",
     "archiver": "^8.0.0",
     "axios": "^1.16.0",
-    "better-sqlite3": "^12.9.0",
     "bree": "^9.2.9",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -26,6 +31,7 @@
     "form-data": "^4.0.5",
     "multer": "^2.1.1",
     "openai": "^6.36.0",
+    "pg": "^8.13.1",
     "uuid": "^14.0.0"
   }
 }

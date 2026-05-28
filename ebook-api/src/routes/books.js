@@ -1,12 +1,14 @@
 const express = require('express');
 const multer = require('multer');
+const os = require('os');
+const path = require('path');
 const bookController = require('../controllers/bookController');
 const characterController = require('../controllers/characterController');
 
 const router = express.Router();
 
 // Multer config for file upload
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ dest: path.join(os.tmpdir(), 'ebook-uploads') });
 
 router.post('/upload', upload.single('file'), bookController.upload);
 router.post('/', bookController.createBook);

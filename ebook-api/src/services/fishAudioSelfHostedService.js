@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { extractMarker } = require('./tts/voiceProfileIdentity');
+const storageService = require('./storage/storageService');
+const { mediaUrlForKey } = require('./storage/keyBuilder');
 
 const DEFAULT_BASE_URL = 'http://localhost:8080';
 const DEFAULT_FORMAT = process.env.FISH_SELF_HOSTED_DEFAULT_FORMAT || 'wav';
@@ -48,7 +50,7 @@ function getRepositories() {
   return require('../repositories');
 }
 
-function normalizeReferenceVoice(reference) {
+async function normalizeReferenceVoice(reference) {
   const referenceId = getReferenceId(reference);
   const markerInfo = extractMarker(reference) || extractMarker(referenceId);
   const voiceProfileId = markerInfo?.voice_profile_id || parseVoiceProfileId(referenceId);
@@ -57,7 +59,7 @@ function normalizeReferenceVoice(reference) {
   const {
     voiceProfileRepository
   } = getRepositories();
-  const profile = voiceProfileRepository.findById(voiceProfileId);
+  const profile = await voiceProfileRepository.findById(voiceProfileId);
   if (!profile) return null;
 
   return {
@@ -127,8 +129,6 @@ function buildPromptedText(text, options = {}) {
 class FishAudioSelfHostedService {
   constructor() {
     this.baseUrl = normalizeBaseUrl(process.env.FISH_SELF_HOSTED_BASE_URL);
-    this.audioDir = path.join(__dirname, '../../public/audio');
-    fs.mkdirSync(this.audioDir, { recursive: true });
   }
 
   getBaseUrl() {
@@ -176,8 +176,8 @@ class FishAudioSelfHostedService {
     const response = await axios.get(`${this.getBaseUrl()}/v1/references/list`, {
       timeout: 30000
     });
-    const voices = normalizeReferenceIds(response.data)
-      .map(normalizeReferenceVoice)
+    const voices = (await Promise.all(normalizeReferenceIds(response.data)
+      .map(normalizeReferenceVoice)))
       .filter(Boolean);
     const pagedVoices = voices.slice(offset, offset + limit);
 
@@ -271,12 +271,20 @@ class FishAudioSelfHostedService {
 
     const buffer = Buffer.from(response.data);
     const ext = pickExtension(format);
-    const filename = `tts_${randomUUID()}.${ext}`;
-    const filePath = path.join(this.audioDir, filename);
-    fs.writeFileSync(filePath, buffer);
+    const key = options.storage?.key || `jobs/tts/${randomUUID()}.${ext}`;
+    await storageService.putObject(key, buffer, {
+      contentType: ext === 'mp3' ? 'audio/mpeg' : `audio/${ext}`,
+      entityType: options.storage?.entityType || 'tts_audio',
+      entityId: options.storage?.entityId || null,
+      metadata: {
+        provider: 'fish_audio_self_hosted',
+        voice_id: voiceId,
+        format
+      }
+    });
 
     return {
-      url: `/audio/${filename}`,
+      url: mediaUrlForKey(key),
       duration_s: null,
       usage: null,
       meta_info: {

@@ -2,9 +2,11 @@ const path = require('path');
 const fs = require('fs');
 const parserService = require('../services/parserService');
 const { bookRepository, chapterRepository } = require('../repositories');
+const storageService = require('../services/storage/storageService');
+const { coverKey, mediaUrlForKey } = require('../services/storage/keyBuilder');
 
 class BookController {
-  createBook(req, res) {
+  async createBook(req, res) {
     try {
       const title = String(req.body.title || '').trim();
       const format = req.body.format || 'manual';
@@ -23,15 +25,15 @@ class BookController {
         }
       }
 
-      const id = bookRepository.create(bookData);
-      const book = bookRepository.findById(id);
+      const id = await bookRepository.create(bookData);
+      const book = await bookRepository.findById(id);
       res.status(201).json({ message: 'Book created', data: book });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  updateBook(req, res) {
+  async updateBook(req, res) {
     try {
       const id = req.params.id;
       const updates = {};
@@ -52,35 +54,36 @@ class BookController {
         }
       }
 
-      const success = bookRepository.update(id, updates);
+      const success = await bookRepository.update(id, updates);
       if (!success) {
         return res.status(404).json({ error: 'Book not found' });
       }
 
-      const book = bookRepository.findById(id);
+      const book = await bookRepository.findById(id);
       res.json({ message: 'Book updated successfully', data: book });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  createChapterForBook(req, res) {
+  async createChapterForBook(req, res) {
     try {
       const bookId = req.params.bookId;
-      const book = bookRepository.findById(bookId);
+      const book = await bookRepository.findById(bookId);
       if (!book) {
         return res.status(404).json({ error: 'Book not found' });
       }
 
-      const title = String(req.body.title || '').trim() || `第 ${chapterRepository.getNextChapterIndex(bookId) + 1} 章`;
+      const nextChapterIndex = await chapterRepository.getNextChapterIndex(bookId);
+      const title = String(req.body.title || '').trim() || `第 ${nextChapterIndex + 1} 章`;
       const content = String(req.body.content || '').trim();
-      const chapterIndex = req.body.chapter_index ?? chapterRepository.getNextChapterIndex(bookId);
+      const chapterIndex = req.body.chapter_index ?? nextChapterIndex;
 
       if (!content) {
         return res.status(400).json({ error: 'content is required' });
       }
 
-      const id = chapterRepository.create({
+      const id = await chapterRepository.create({
         book_id: bookId,
         title,
         content,
@@ -113,10 +116,10 @@ class BookController {
     }
   }
 
-  uploadCover(req, res) {
+  async uploadCover(req, res) {
     try {
       const id = req.params.id;
-      const book = bookRepository.findById(id);
+      const book = await bookRepository.findById(id);
       if (!book) {
         return res.status(404).json({ error: 'Book not found' });
       }
@@ -125,22 +128,22 @@ class BookController {
         return res.status(400).json({ error: 'No cover file uploaded' });
       }
 
-      // Ensure covers directory exists
-      const coversDir = path.join(__dirname, '../../public/covers');
-      if (!fs.existsSync(coversDir)) {
-        fs.mkdirSync(coversDir, { recursive: true });
+      const key = coverKey(id, req.file.originalname);
+      const buffer = req.file.buffer || fs.readFileSync(req.file.path);
+      await storageService.putObject(key, buffer, {
+        contentType: req.file.mimetype || 'image/jpeg',
+        entityType: 'book_cover',
+        entityId: String(id)
+      });
+      if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+
+      const coverUrl = mediaUrlForKey(key);
+      if (book.cover_url) {
+        const { keyFromMediaUrl } = require('../services/storage/keyBuilder');
+        const oldKey = keyFromMediaUrl(book.cover_url);
+        if (oldKey && oldKey !== key) await storageService.deleteObject(oldKey);
       }
-
-      // Move uploaded file to covers directory
-      const ext = path.extname(req.file.originalname) || '.jpg';
-      const filename = `${id}_${Date.now()}${ext}`;
-      const destPath = path.join(coversDir, filename);
-
-      fs.copyFileSync(req.file.path, destPath);
-      fs.unlinkSync(req.file.path);
-
-      const coverUrl = `/covers/${filename}`;
-      bookRepository.update(id, { cover_url: coverUrl });
+      await bookRepository.update(id, { cover_url: coverUrl });
 
       res.json({ message: 'Cover uploaded successfully', data: { cover_url: coverUrl } });
     } catch (error) {
@@ -148,33 +151,33 @@ class BookController {
     }
   }
 
-  getBookCount(req, res) {
+  async getBookCount(req, res) {
     try {
-      const total = bookRepository.count();
+      const total = await bookRepository.count();
       res.json({ data: { total } });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  getChapters(req, res) {
+  async getChapters(req, res) {
     try {
       const bookId = req.params.bookId;
-      const chapters = chapterRepository.findByBookId(bookId);
+      const chapters = await chapterRepository.findByBookId(bookId);
       res.json({ data: chapters });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  getBookById(req, res) {
+  async getBookById(req, res) {
     try {
       const id = req.params.id;
-      const book = bookRepository.findById(id);
+      const book = await bookRepository.findById(id);
       if (!book) {
         return res.status(404).json({ error: 'Book not found' });
       }
-      const chapters = chapterRepository.findByBookId(id);
+      const chapters = await chapterRepository.findByBookId(id);
       book.chapters = chapters;
       res.json({ data: book });
     } catch (error) {
@@ -182,24 +185,24 @@ class BookController {
     }
   }
 
-  getAllBooks(req, res) {
+  async getAllBooks(req, res) {
     try {
       const options = {};
       if (req.query.q) options.q = req.query.q;
       if (req.query.sort) options.sort = req.query.sort;
       if (req.query.order) options.order = req.query.order;
 
-      const books = bookRepository.findAll(options);
+      const books = await bookRepository.findAll(options);
       res.json({ data: books });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   }
 
-  deleteBook(req, res) {
+  async deleteBook(req, res) {
     try {
       const id = req.params.id;
-      const success = bookRepository.delete(id);
+      const success = await bookRepository.delete(id);
       if (success) {
         res.json({ message: 'Book deleted successfully' });
       } else {

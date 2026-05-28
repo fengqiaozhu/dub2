@@ -1,8 +1,9 @@
-const SqliteChapterRepository = require('../../repositories/sqlite/SqliteChapterRepository');
-const SqliteDialogueRepository = require('../../repositories/sqlite/SqliteDialogueRepository');
-const SqliteChapterCharacterRepository = require('../../repositories/sqlite/SqliteChapterCharacterRepository');
-const SqliteCharacterVoiceBindingRepository = require('../../repositories/sqlite/SqliteCharacterVoiceBindingRepository');
-const SqliteChapterAudioSkipRangeRepository = require('../../repositories/sqlite/SqliteChapterAudioSkipRangeRepository');
+const {
+  chapterRepository,
+  dialogueRepository,
+  characterVoiceBindingRepository,
+  chapterAudioSkipRangeRepository
+} = require('../../repositories');
 const { resolveBinding } = require('./voiceResolver');
 const {
   computeDialogueAudioHash,
@@ -12,12 +13,6 @@ const {
   hasSpeakableContent
 } = require('../chapterAudioState');
 const providerRegistry = require('./providerRegistry');
-
-const chapterRepository = new SqliteChapterRepository();
-const dialogueRepository = new SqliteDialogueRepository();
-const chapterCharacterRepository = new SqliteChapterCharacterRepository();
-const characterVoiceBindingRepository = new SqliteCharacterVoiceBindingRepository();
-const chapterAudioSkipRangeRepository = new SqliteChapterAudioSkipRangeRepository();
 
 function createEmptyProviderSummary(provider) {
   return {
@@ -99,9 +94,9 @@ function buildEmotionWarnings(tasks) {
   }));
 }
 
-function getDubbingRoles(chapterId, skipRanges = []) {
+async function getDubbingRoles(chapterId, skipRanges = []) {
   const roles = new Set(['旁白']);
-  const dialogues = dialogueRepository.findByChapterId(chapterId);
+  const dialogues = await dialogueRepository.findByChapterId(chapterId);
   for (const dialogue of dialogues) {
     if (
       dialogue.character_name &&
@@ -126,14 +121,14 @@ function needsDubbing(dialogue, sourceHash, options) {
   return dialogue.audio_source_hash !== sourceHash;
 }
 
-function createPlan(chapterId, options = {}) {
-  const chapter = chapterRepository.findById(chapterId);
+async function createPlan(chapterId, options = {}) {
+  const chapter = await chapterRepository.findById(chapterId);
   if (!chapter) {
     throw new Error('Chapter not found');
   }
 
-  const storedDialogues = dialogueRepository.findByChapterId(chapterId);
-  const skipRanges = chapterAudioSkipRangeRepository.findByChapterId(chapterId);
+  const storedDialogues = await dialogueRepository.findByChapterId(chapterId);
+  const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(chapterId);
   const hasNarratorRows = storedDialogues.some((dialogue) => dialogue.source === 'narrator');
   const dialogues = (hasNarratorRows ? storedDialogues : storedDialogues.concat(buildNarratorDialogues(chapter, storedDialogues)))
     .filter((dialogue) => (
@@ -142,11 +137,11 @@ function createPlan(chapterId, options = {}) {
       (dialogue.source === 'narrator' || dialogue.char_start >= 0) &&
       !isAudioSkipped(dialogue, skipRanges)
     ));
-  const bindings = characterVoiceBindingRepository.findByBookId(chapter.book_id);
+  const bindings = await characterVoiceBindingRepository.findByBookId(chapter.book_id);
   const bindingMap = new Map(bindings.map((binding) => [binding.character_name, binding]));
-  const roles = getDubbingRoles(chapterId, skipRanges);
+  const roles = await getDubbingRoles(chapterId, skipRanges);
 
-  const rolePlans = roles.map((characterName) => {
+  const rolePlans = await Promise.all(roles.map(async (characterName) => {
     const binding = bindingMap.get(characterName);
     if (!binding) {
       return {
@@ -157,7 +152,7 @@ function createPlan(chapterId, options = {}) {
       };
     }
 
-    const resolved = resolveBinding(binding, { requireActive: true });
+    const resolved = await resolveBinding(binding, { requireActive: true });
     return {
       character_name: characterName,
       ready: resolved.ready,
@@ -178,7 +173,7 @@ function createPlan(chapterId, options = {}) {
       } : null,
       intent: resolved.intent
     };
-  });
+  }));
 
   const rolePlanMap = new Map(rolePlans.map((role) => [role.character_name, role]));
   const tasks = [];
