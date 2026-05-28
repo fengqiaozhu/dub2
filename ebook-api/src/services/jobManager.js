@@ -74,10 +74,9 @@ class JobManager {
           }
         }
       });
-      this.bree.start(job.job_name);
     }
 
-    // 2. 清理超过 7 天的历史任务，防止数据库膨胀
+    // 3. 清理超过 7 天的历史任务，防止数据库膨胀
     const cleanedCount = await jobRepository.cleanupOldJobs(7);
     if (cleanedCount > 0) {
       console.log(`[JobManager] Cleaned up ${cleanedCount} old jobs.`);
@@ -85,6 +84,15 @@ class JobManager {
 
     await this.bree.start();
     console.log('[JobManager] Bree initialized and listening.');
+
+    // 4. 在全局 Bree 启动就绪后，逐个安全启动我们刚刚添加的手动触发型单次续作任务，避免时序冲突
+    for (const job of interruptedBatchJobs) {
+      try {
+        this.bree.start(job.job_name);
+      } catch (err) {
+        console.error(`[JobManager] Failed to start auto-resumed job ${job.job_name}:`, err.message);
+      }
+    }
   }
 
   /**

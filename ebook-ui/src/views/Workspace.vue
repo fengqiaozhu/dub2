@@ -297,7 +297,7 @@ watch(() => route.params.bookId, async (value) => {
   }
 });
 
-const startDubbing = async () => {
+const startDubbing = async (forceParam?: boolean) => {
   if (!workspaceStore.activeChapterId) return;
   if (!isChapterAnalyzed.value) {
     const ok = await showConfirm(
@@ -328,13 +328,21 @@ const startDubbing = async () => {
     return;
   }
 
-  const force = dubbingAction.value.mode === 'redub';
+  const force = forceParam !== undefined ? forceParam : (dubbingAction.value.mode === 'redub');
   if (force) {
     const ok = await showConfirm(
       '确认重新配音',
-      '重新配音会清理本章节已有音频和已拼接音轨，并重新生成所有对白与旁白音频。',
+      '重新配音会清理本章节已有音频和已拼接音轨，并重新生成所有对白与旁白音频。此操作不可撤销。',
       [],
       '重新配音'
+    );
+    if (!ok) return;
+  } else if (dubbingStats.value.completed > 0) {
+    const ok = await showConfirm(
+      '确认更新配音',
+      '更新配音只会为新标注的对白、已更改音色或修改过情绪的对白生成配音，不会影响其他已生成且正常的配音。',
+      [],
+      '开始更新'
     );
     if (!ok) return;
   }
@@ -592,14 +600,42 @@ const exportMergedChapterAudio = async () => {
         </div>
       </div>
 
-      <div class="start-action">
-        <button class="btn btn-primary btn-large" @click="startDubbing" :disabled="isDubbing || !workspaceStore.activeChapterId">
+      <div class="start-action" v-if="isChapterAnalyzed">
+        <!-- 正在配音中 -->
+        <button v-if="isDubbing" class="btn btn-primary btn-large" disabled>
+          <span class="spinner-small"></span>
+          配音中... {{ dubbingJob?.progress || 0 }}%
+        </button>
+        
+        <!-- 未开始配音 -->
+        <button v-else-if="dubbingStats.completed === 0" class="btn btn-primary btn-large" @click="startDubbing(false)" :disabled="!workspaceStore.activeChapterId">
+          开始AI配音
+          <span class="sub-text mono-text">待配音 {{ dubbingStats.pending }} 句</span>
+        </button>
+        
+        <!-- 已有成功配音部分，展示双控制按钮 -->
+        <div v-else class="dub-action-group">
+          <button class="btn btn-outline btn-large" @click="startDubbing(false)" :disabled="!workspaceStore.activeChapterId">
+            更新变动/缺失
+            <span class="sub-text mono-text" style="color: rgba(255,255,255,0.7)">
+              更新 {{ dubbingStats.stale + dubbingStats.failed + dubbingStats.missing }} 句
+            </span>
+          </button>
+          <button class="btn btn-primary btn-large" @click="startDubbing(true)" :disabled="!workspaceStore.activeChapterId">
+            全新重配全章
+            <span class="sub-text mono-text">覆盖重配 {{ dubbingStats.total }} 句</span>
+          </button>
+        </div>
+      </div>
+      <div class="start-action" v-else>
+        <!-- 尚未 AI 解析状态，降级处理 -->
+        <button class="btn btn-primary btn-large" @click="startDubbing(false)" :disabled="isDubbing || !workspaceStore.activeChapterId">
           <template v-if="isDubbing">
             <span class="spinner-small"></span>
             配音中... {{ dubbingJob?.progress || 0 }}%
           </template>
           <template v-else>
-            {{ dubbingAction.label }}¸¸¸
+            {{ dubbingAction.label }}
             <span class="sub-text mono-text">{{ dubbingAction.subText }}</span>
           </template>
         </button>
@@ -991,6 +1027,28 @@ const exportMergedChapterAudio = async () => {
 .start-action {
   display: flex;
   flex-shrink: 0;
+}
+
+.dub-action-group {
+  display: flex;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.dub-action-group .btn-outline {
+  border: 1px solid rgba(0, 212, 170, 0.4);
+  color: #00d4aa;
+  background-color: rgba(0, 212, 170, 0.04);
+  padding: 8px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.dub-action-group .btn-outline:hover {
+  border-color: #00d4aa;
+  background-color: rgba(0, 212, 170, 0.08);
 }
 
 .btn-primary.btn-large {

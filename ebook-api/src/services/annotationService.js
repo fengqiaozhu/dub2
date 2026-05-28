@@ -124,7 +124,22 @@ async function updateAnnotation(id, payload) {
     : existing.character_name;
   if (!characterName) throw new Error('character_name is required');
   validateRange(chapter, charStart, charEnd);
-  await replaceOverlaps(chapter, charStart, charEnd, id);
+
+  const newContent = getAnnotationContent(chapter, charStart, charEnd);
+  const newEmotion = payload.emotion ?? existing.emotion ?? '';
+
+  const isAudioParamChanged =
+    newContent !== existing.content ||
+    characterName !== existing.character_name ||
+    newEmotion !== existing.emotion;
+
+  const isRangeChanged =
+    charStart !== existing.char_start ||
+    charEnd !== existing.char_end;
+
+  if (isRangeChanged) {
+    await replaceOverlaps(chapter, charStart, charEnd, id);
+  }
 
   const chapterCharacterId = await chapterCharacterRepository.upsert(chapter.id, chapter.book_id, characterName);
   const annotationStatus = payload.confirmed !== undefined
@@ -134,8 +149,8 @@ async function updateAnnotation(id, payload) {
   await dialogueRepository.update(id, {
     chapter_character_id: chapterCharacterId,
     segment_id: null,
-    content: getAnnotationContent(chapter, charStart, charEnd),
-    emotion: payload.emotion ?? existing.emotion ?? '',
+    content: newContent,
+    emotion: newEmotion,
     char_start: charStart,
     char_end: charEnd,
     source: payload.source ?? existing.source ?? 'manual',
@@ -143,11 +158,20 @@ async function updateAnnotation(id, payload) {
     updated_by: payload.updated_by ?? 'user',
     order_index: charStart
   });
-  await dialogueRepository.clearAudioById(id);
+
+  if (isAudioParamChanged) {
+    await dialogueRepository.clearAudioById(id);
+  }
 
   await chapterCharacterRepository.deleteUnusedByChapterId(chapter.id);
   await bookCharacterRepository.recalculateForBook(chapter.book_id);
-  await invalidateChapterNarrationAndExport(chapter.id);
+
+  if (isRangeChanged) {
+    await invalidateChapterNarrationAndExport(chapter.id);
+  } else if (isAudioParamChanged) {
+    await chapterAudioExportRepository.deleteByChapterId(chapter.id);
+  }
+
   return dialogueRepository.findById(id);
 }
 

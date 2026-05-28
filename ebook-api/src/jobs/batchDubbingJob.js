@@ -122,7 +122,6 @@ const { chapterId, items, force = false } = params;
       result: { dubbed: dubbedCount, skipped: skippedCount, errors: errorCount, total }
     });
 
-    parentPort.postMessage('done');
   } catch (error) {
     console.error(`[batchDubbingJob] Fatal error:`, error);
     parentPort.postMessage({
@@ -131,6 +130,5 @@ const { chapterId, items, force = false } = params;
       jobName,
       error: error.message
     });
-    parentPort.postMessage('done');
   }
 })();
