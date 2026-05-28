@@ -44,8 +44,8 @@ class FishAudioSelfHostedProvider {
     return fishAudioSelfHostedService.listVoices(params);
   }
 
-  async cloneVoice({ filePath, text = '', name, voice_profile_id, onProgress }) {
-    return fishAudioSelfHostedService.cloneVoice({ filePath, text, name, voice_profile_id, onProgress });
+  async cloneVoice({ filePath, text = '', name, voice_profile_id, marker, onProgress }) {
+    return fishAudioSelfHostedService.cloneVoice({ filePath, text, name, voice_profile_id, marker, onProgress });
   }
 
   async deleteVoice(voiceId) {

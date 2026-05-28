@@ -59,6 +59,24 @@ class SqliteProviderVoiceRepository {
     ).all(voiceProfileId);
   }
 
+  deleteMissingForProvider(provider, confirmedVoiceIds = []) {
+    const ids = confirmedVoiceIds.filter(Boolean);
+    if (ids.length === 0) {
+      return this.db.prepare(`
+        DELETE FROM provider_voices
+        WHERE provider = ? AND kind IN ('clone', 'custom', 'imported')
+      `).run(provider).changes;
+    }
+
+    const placeholders = ids.map(() => '?').join(', ');
+    return this.db.prepare(`
+      DELETE FROM provider_voices
+      WHERE provider = ?
+        AND kind IN ('clone', 'custom', 'imported')
+        AND provider_voice_id NOT IN (${placeholders})
+    `).run(provider, ...ids).changes;
+  }
+
   findActiveByProfileId(voiceProfileId, provider) {
     const conditions = ['voice_profile_id = ?'];
     const values = [voiceProfileId];

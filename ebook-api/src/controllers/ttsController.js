@@ -5,6 +5,10 @@ const path = require('path');
 const axios = require('axios');
 const { randomUUID } = require('crypto');
 const {
+  computeFileHash,
+  resolvePublicFilePath
+} = require('../services/tts/voiceProfileIdentity');
+const {
   voiceProfileRepository,
   providerVoiceRepository,
   voiceFavoriteRepository
@@ -57,6 +61,7 @@ function saveVoiceSample(file, fields = {}) {
     description: fields.description,
     sample_text: fields.text || fields.sample_text,
     sample_audio_url: `/voice-samples/${sampleFilename}`,
+    sample_hash: computeFileHash(samplePath),
     language: fields.language,
     consent_status: fields.consent_status || 'unknown'
   });
@@ -67,15 +72,6 @@ function saveVoiceSample(file, fields = {}) {
     sampleFilename,
     sampleAudioUrl: `/voice-samples/${sampleFilename}`
   };
-}
-
-function resolvePublicFilePath(relativeUrl) {
-  if (!relativeUrl || String(relativeUrl).startsWith('http')) return null;
-  const publicRoot = path.resolve(__dirname, '../../public');
-  const pathname = String(relativeUrl).split('?')[0].replace(/^\/+/, '');
-  const filePath = path.resolve(publicRoot, pathname);
-  if (!filePath.startsWith(`${publicRoot}${path.sep}`)) return null;
-  return filePath;
 }
 
 class TtsController {
@@ -314,6 +310,20 @@ class TtsController {
       }
 
       const provider = req.body.provider || req.query.provider || 'mosi';
+      const existingVoice = providerVoiceRepository.findActiveByProfileId(voiceProfileId, provider);
+      if (existingVoice) {
+        return res.status(200).json({
+          message: 'Voice profile is already cloned to provider',
+          data: {
+            voice_profile_id: voiceProfileId,
+            provider,
+            provider_voice_id: existingVoice.provider_voice_id,
+            status: 'EXISTS',
+            skipped: true
+          }
+        });
+      }
+
       const filePath = resolvePublicFilePath(profile.sample_audio_url);
       if (!filePath || !fs.existsSync(filePath)) {
         return res.status(400).json({ error: 'Voice profile sample audio is missing' });

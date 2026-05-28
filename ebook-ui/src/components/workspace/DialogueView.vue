@@ -1459,7 +1459,8 @@ onMounted(() => {
 .audio-filter-chip { height: 24px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
 .audio-filter-chip span { font-family: var(--font-mono); font-size: 10px; }
 .audio-filter-chip.active { color: var(--text-primary); border-color: var(--border-focus); background: rgba(255,255,255,0.04); }
-.audio-filter-chip.problem.active, .audio-filter-chip.missing.active { color: #f59e0b; border-color: rgba(245,158,11,.58); background: rgba(245,158,11,.12); }
+.audio-filter-chip.problem.active { color: #f59e0b; border-color: rgba(245,158,11,.58); background: rgba(245,158,11,.12); }
+.audio-filter-chip.missing.active { color: #cbd5e1; border-color: rgba(148,163,184,.45); background: rgba(148,163,184,.08); }
 .audio-filter-chip.stale.active { color: #facc15; border-color: rgba(250,204,21,.55); background: rgba(250,204,21,.1); }
 .audio-filter-chip.failed.active { color: #f87171; border-color: rgba(248,113,113,.58); background: rgba(248,113,113,.12); }
 .audio-filter-chip.skipped.active { color: #94a3b8; border-color: rgba(148,163,184,.58); background: rgba(148,163,184,.12); }
@@ -1552,13 +1553,15 @@ onMounted(() => {
 .stale-copy > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stale-audio-notice .issue-status { color: #fde047; }
 .audio-issue { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; margin-bottom: 2px; padding: 6px 9px; border: 1px solid rgba(245,158,11,.28); border-radius: var(--radius-sm); background: rgba(245,158,11,.07); }
+.audio-issue.missing { border-color: rgba(148,163,184,.18); background: rgba(148,163,184,.035); }
 .audio-issue.stale { border-color: rgba(250,204,21,.28); background: rgba(250,204,21,.07); }
 .audio-issue.failed { border-color: rgba(248,113,113,.32); background: rgba(248,113,113,.08); }
 .audio-issue.skipped { border-color: rgba(148,163,184,.28); background: rgba(148,163,184,.07); }
 .issue-main { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
 .issue-main strong { color: var(--text-primary); flex-shrink: 0; }
 .issue-main small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.issue-status { flex-shrink: 0; padding: 2px 6px; border-radius: var(--radius-sm); background: rgba(0,0,0,.16); color: #f8c16c; font-size: 11px; font-weight: 600; }
+.issue-status { flex-shrink: 0; padding: 1px 5px; border-radius: var(--radius-sm); background: rgba(0,0,0,.16); color: #f8c16c; font-size: 10px; font-weight: 600; line-height: 18px; }
+.audio-issue.missing .issue-status { background: rgba(148,163,184,.1); color: #94a3b8; font-weight: 500; }
 .audio-issue.stale .issue-status { color: #fde047; }
 .audio-issue.failed .issue-status { color: #fca5a5; }
 .audio-issue.skipped .issue-status { color: #cbd5e1; }

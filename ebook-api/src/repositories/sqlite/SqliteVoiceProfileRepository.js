@@ -12,17 +12,19 @@ class SqliteVoiceProfileRepository {
         description,
         sample_text,
         sample_audio_url,
+        sample_hash,
         language,
         speaker_meta,
         consent_status,
         quality_meta
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       profile.name,
       profile.description || null,
       profile.sample_text || null,
       profile.sample_audio_url || null,
+      profile.sample_hash || null,
       profile.language || null,
       profile.speaker_meta ? JSON.stringify(profile.speaker_meta) : null,
       profile.consent_status || 'unknown',
@@ -34,6 +36,14 @@ class SqliteVoiceProfileRepository {
 
   findById(id) {
     return this.db.prepare('SELECT * FROM voice_profiles WHERE id = ?').get(id);
+  }
+
+  updateSampleHash(id, sampleHash) {
+    this.db.prepare(`
+      UPDATE voice_profiles
+      SET sample_hash = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(sampleHash, id);
   }
 
   delete(id) {

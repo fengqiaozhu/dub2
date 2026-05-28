@@ -1,4 +1,5 @@
 const mosiService = require('../../mosiService');
+const { extractMarker } = require('../voiceProfileIdentity');
 
 function proxyMediaUrl(url) {
   if (!url || !String(url).startsWith('http')) return url;
@@ -26,16 +27,15 @@ function normalizeSystemVoice(voice) {
 
 function normalizeCustomVoice(voice) {
   const providerVoiceId = voice.voice_id || voice.voiceId || voice.id;
-  const providerVoice = providerVoiceId
-    ? require('../../../repositories').providerVoiceRepository.findByProviderVoiceId('mosi', providerVoiceId)
-    : null;
+  const markerInfo = extractMarker(voice);
   return {
     id: providerVoiceId,
     provider: 'mosi',
     provider_voice_id: providerVoiceId,
-    voice_profile_id: providerVoice?.voice_profile_id || null,
-    name: providerVoice?.voice_profile_name || voice.name || voice.voiceName || voice.voice_name || `Voice ${providerVoiceId}`,
-    voice_profile_name: providerVoice?.voice_profile_name,
+    voice_profile_id: markerInfo?.voice_profile_id || null,
+    name: voice.name || voice.voiceName || voice.voice_name || `Voice ${providerVoiceId}`,
+    description: voice.description || voice.desc,
+    marker: markerInfo?.marker,
     source: 'clone',
     raw: voice,
     status: voice.status
@@ -114,8 +114,12 @@ class MosiProvider {
     };
   }
 
-  async cloneVoice({ filePath, text = '', fileName, onProgress }) {
-    return mosiService.uploadAndCloneVoice(filePath, text, onProgress, fileName);
+  async cloneVoice({ filePath, text = '', fileName, marker, onProgress }) {
+    const result = await mosiService.uploadAndCloneVoice(filePath, text, onProgress, fileName);
+    return {
+      ...result,
+      marker
+    };
   }
 
   async synthesize({ text, voiceId, options = {} }) {

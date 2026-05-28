@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import request, { toMediaUrl } from '@/api/request';
 import AudioTrack from '@/components/common/AudioTrack.vue';
 import { fetchTtsVoicePage, fetchVoiceProfilePage } from '@/api/voices';
@@ -51,6 +51,7 @@ interface ProviderVoice {
   sample_audio_url?: string;
   voice_profile_id?: number | null;
   voice_profile_name?: string;
+  projection_confirmed?: boolean;
   capabilities_snapshot?: any;
   raw?: any;
 }
@@ -115,6 +116,10 @@ const uploadSaving = ref(false);
 const cloningProfileIds = ref<Set<number>>(new Set());
 const selectedProfileIds = ref<Set<number>>(new Set());
 const cloneTargetProvider = ref('mosi');
+const clonePickerVisible = ref(false);
+const clonePickerProfiles = ref<VoiceProfile[]>([]);
+const clonePickerProvider = ref('mosi');
+const cloneSubmitting = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const uploadForm = ref({
   name: '',
@@ -129,6 +134,9 @@ const uploadForm = ref({
 const profilePageState = ref<PageState>({ offset: 0, hasMore: true, loading: false });
 const providerVoicePageStates = ref<Record<string, PageState>>({});
 const VOICE_PAGE_LIMIT = 60;
+const cloneJobPollers = new Map<string, number>();
+let profileReloadToken = 0;
+let providerVoiceReloadToken = 0;
 
 const providerOptions = computed(() => [
   { value: 'all', label: '全部 Provider' },
@@ -148,6 +156,11 @@ const activeCloneProvider = computed(() => {
   }
   return available[0]?.value || 'mosi';
 });
+
+const selectedCloneProviderLabel = computed(() => (
+  cloneProviderOptions.value.find((provider) => provider.value === clonePickerProvider.value)?.label
+  || clonePickerProvider.value
+));
 
 const providerSummary = computed(() => {
   const configured = providers.value.length;
@@ -240,6 +253,23 @@ const providerStatusChips = (profile: VoiceProfile) => {
   });
 };
 
+const profileHasProviderClone = (profile: VoiceProfile, provider: string) => (
+  providerStatusChips(profile).some((chip) => (
+    chip.provider === provider
+    && ['ACTIVE', 'DONE', 'PENDING', 'RUNNING'].includes(String(chip.status || '').toUpperCase())
+  ))
+);
+
+const clonePickerAlreadyClonedProfiles = computed(() => (
+  clonePickerProfiles.value.filter((profile) => profileHasProviderClone(profile, clonePickerProvider.value))
+));
+
+const clonePickerCloneableProfiles = computed(() => (
+  clonePickerProfiles.value.filter((profile) => (
+    profile.sample_audio_url && !profileHasProviderClone(profile, clonePickerProvider.value)
+  ))
+));
+
 const voiceName = (voice: ProviderVoice) => (
   voice.displayName || voice.name || voice.raw?.voiceName || voice.raw?.name || voice.provider_voice_id
 );
@@ -264,6 +294,11 @@ const isProviderSynthAvailable = (provider: string) => providerStatusFor(provide
 const providerUnavailableReason = (provider: string) => providerStatusFor(provider)?.reason || '该平台当前不可配音';
 const isProfileSelected = (profile: VoiceProfile) => selectedProfileIds.value.has(profile.id);
 const isProfileCloning = (profile: VoiceProfile) => cloningProfileIds.value.has(profile.id);
+const selectableFilteredProfiles = computed(() => filteredProfiles.value.filter((profile) => Boolean(profile.sample_audio_url)));
+const allFilteredProfilesSelected = computed(() => (
+  selectableFilteredProfiles.value.length > 0
+  && selectableFilteredProfiles.value.every((profile) => selectedProfileIds.value.has(profile.id))
+));
 
 const sortFavoritesFirst = <T,>(items: T[], getKey: (item: T) => string) => (
   [...items].sort((a, b) => Number(isFavoriteKey(getKey(b))) - Number(isFavoriteKey(getKey(a))))
@@ -308,13 +343,27 @@ const fetchProviders = async () => {
 };
 
 const fetchVoiceProfiles = async () => {
-  voiceProfiles.value = [];
-  profilePageState.value = { offset: 0, hasMore: true, loading: false };
+  const token = ++profileReloadToken;
+  profilePageState.value = { offset: 0, hasMore: true, loading: true };
+  loadingMoreProfiles.value = true;
   try {
-    await loadMoreVoiceProfiles();
+    const page = await fetchVoiceProfilePage({ limit: VOICE_PAGE_LIMIT, offset: 0 });
+    if (token !== profileReloadToken) return;
+    voiceProfiles.value = page.profiles;
+    profilePageState.value = {
+      offset: page.nextOffset,
+      hasMore: page.hasMore,
+      loading: false,
+    };
   } catch (error) {
+    if (token !== profileReloadToken) return;
     console.error('Failed to fetch voice profiles:', error);
     voiceProfiles.value = [];
+    profilePageState.value = { offset: 0, hasMore: false, loading: false };
+  } finally {
+    if (token === profileReloadToken) {
+      loadingMoreProfiles.value = false;
+    }
   }
 };
 
@@ -329,18 +378,44 @@ const fetchFavorites = async () => {
 };
 
 const fetchPlatformVoices = async () => {
-  platformVoices.value = [];
-  providerVoicePageStates.value = {};
+  const token = ++providerVoiceReloadToken;
+  const nextStates: Record<string, PageState> = {};
   currentProviderIds().forEach((provider) => {
     (['system', 'clone'] as const).forEach((kind) => {
+      nextStates[providerKindKey(provider, kind)] = { offset: 0, hasMore: true, loading: true };
+    });
+  });
+  providerVoicePageStates.value = nextStates;
+  loadingMoreProviderVoices.value = true;
+
+  try {
+    const pages = await Promise.all(currentProviderIds().flatMap((provider) => (
+      (['system', 'clone'] as const).map(async (kind) => {
+        try {
+          const page = await fetchTtsVoicePage({ provider, kind, limit: VOICE_PAGE_LIMIT, offset: 0 });
+          return { provider, kind, page };
+        } catch (error) {
+          console.warn(`Failed to fetch ${provider} ${kind} voices:`, error);
+          return { provider, kind, page: { voices: [], nextOffset: 0, hasMore: false } };
+        }
+      })
+    )));
+    if (token !== providerVoiceReloadToken) return;
+    pages.forEach(({ provider, kind, page }) => {
       providerVoicePageStates.value[providerKindKey(provider, kind)] = {
-        offset: 0,
-        hasMore: true,
+        offset: page.nextOffset,
+        hasMore: page.hasMore,
         loading: false,
       };
     });
-  });
-  await loadMoreProviderVoices();
+    platformVoices.value = pages.flatMap(({ provider, kind, page }) => (
+      page.voices.map((voice: any) => mapLiveVoice({ ...voice, provider }, kind))
+    ));
+  } finally {
+    if (token === providerVoiceReloadToken) {
+      loadingMoreProviderVoices.value = false;
+    }
+  }
 };
 
 const loadMoreVoiceProfiles = async () => {
@@ -462,29 +537,145 @@ const toggleProfileSelection = (profile: VoiceProfile) => {
   selectedProfileIds.value = next;
 };
 
-const cloneProfileToProvider = async (profile: VoiceProfile, provider = activeCloneProvider.value) => {
-  if (!profile.sample_audio_url || isProfileCloning(profile)) return;
+const toggleAllFilteredProfiles = () => {
+  const next = new Set(selectedProfileIds.value);
+  if (allFilteredProfilesSelected.value) {
+    selectableFilteredProfiles.value.forEach((profile) => next.delete(profile.id));
+  } else {
+    selectableFilteredProfiles.value.forEach((profile) => next.add(profile.id));
+  }
+  selectedProfileIds.value = next;
+};
+
+const setProfilesCloning = (profiles: VoiceProfile[], cloning: boolean) => {
   const next = new Set(cloningProfileIds.value);
-  next.add(profile.id);
+  profiles.forEach((profile) => {
+    if (cloning) next.add(profile.id);
+    else next.delete(profile.id);
+  });
   cloningProfileIds.value = next;
-  try {
-    await request.post(`/tts/voice-profiles/${profile.id}/clone`, { provider });
-    selectedProfileIds.value = new Set([...selectedProfileIds.value].filter((id) => id !== profile.id));
-    await Promise.all([fetchVoiceProfiles(), fetchPlatformVoices(), fetchCloneJobs()]);
-    activeTab.value = 'jobs';
-  } catch (error) {
-    console.error('Failed to clone voice profile:', error);
-  } finally {
-    const done = new Set(cloningProfileIds.value);
-    done.delete(profile.id);
-    cloningProfileIds.value = done;
+};
+
+const upsertCloneJob = (job: Job) => {
+  cloneJobs.value = [
+    job,
+    ...cloneJobs.value.filter((item) => item.id !== job.id),
+  ].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  if (detailItem.value?.type === 'job' && detailItem.value.data.id === job.id) {
+    detailItem.value = { type: 'job', data: job };
   }
 };
 
-const cloneSelectedProfiles = async () => {
+const stopCloneJobPolling = (jobId: string) => {
+  const interval = cloneJobPollers.get(jobId);
+  if (!interval) return;
+  window.clearInterval(interval);
+  cloneJobPollers.delete(jobId);
+};
+
+const trackCloneJob = (jobId: string, profileId?: number) => {
+  if (!jobId || cloneJobPollers.has(jobId)) return;
+
+  const poll = async () => {
+    try {
+      const response: any = await request.get(`/jobs/${jobId}`);
+      const job: Job = response?.data || response;
+      upsertCloneJob(job);
+      if (job.status === 'DONE' || job.status === 'FAILED') {
+        stopCloneJobPolling(jobId);
+        if (profileId) {
+          const done = new Set(cloningProfileIds.value);
+          done.delete(profileId);
+          cloningProfileIds.value = done;
+        }
+        if (job.status === 'DONE') {
+          await Promise.all([fetchVoiceProfiles(), fetchPlatformVoices(), fetchFavorites()]);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to poll clone job:', error);
+      stopCloneJobPolling(jobId);
+    }
+  };
+
+  poll();
+  cloneJobPollers.set(jobId, window.setInterval(poll, 1800));
+};
+
+const openClonePicker = (profiles: VoiceProfile[]) => {
+  const candidates = profiles.filter((profile) => profile.sample_audio_url);
+  if (candidates.length === 0 || cloneProviderOptions.value.length === 0) return;
+  clonePickerProfiles.value = candidates;
+  clonePickerProvider.value = activeCloneProvider.value;
+  cloneTargetProvider.value = activeCloneProvider.value;
+  clonePickerVisible.value = true;
+};
+
+const closeClonePicker = () => {
+  if (cloneSubmitting.value) return;
+  clonePickerVisible.value = false;
+  clonePickerProfiles.value = [];
+};
+
+const submitClonePicker = async () => {
+  if (cloneSubmitting.value) return;
+  const provider = clonePickerProvider.value;
+  const targets = clonePickerCloneableProfiles.value;
+  if (targets.length === 0) {
+    closeClonePicker();
+    return;
+  }
+
+  cloneSubmitting.value = true;
+  setProfilesCloning(targets, true);
+  activeTab.value = 'jobs';
+  try {
+    const results = await Promise.all(targets.map(async (profile) => {
+      const response: any = await request.post(`/tts/voice-profiles/${profile.id}/clone`, { provider });
+      return { profile, data: response?.data || response };
+    }));
+
+    results.forEach(({ profile, data }) => {
+      if (data?.jobId) {
+        const pendingJob: Job = {
+          id: data.jobId,
+          job_name: `tts_clone-${data.jobId}`,
+          type: 'tts_clone',
+          target_id: String(profile.id),
+          status: 'PENDING',
+          progress: 0,
+        };
+        upsertCloneJob(pendingJob);
+        trackCloneJob(data.jobId, profile.id);
+      } else {
+        const done = new Set(cloningProfileIds.value);
+        done.delete(profile.id);
+        cloningProfileIds.value = done;
+      }
+    });
+
+    selectedProfileIds.value = new Set([...selectedProfileIds.value].filter((id) => (
+      !clonePickerProfiles.value.some((profile) => profile.id === id)
+    )));
+    clonePickerVisible.value = false;
+    clonePickerProfiles.value = [];
+    await Promise.all([fetchVoiceProfiles(), fetchPlatformVoices(), fetchCloneJobs()]);
+  } catch (error) {
+    console.error('Failed to clone voice profile:', error);
+    setProfilesCloning(targets, false);
+  } finally {
+    cloneSubmitting.value = false;
+  }
+};
+
+const cloneProfileToProvider = (profile: VoiceProfile) => {
+  if (isProfileCloning(profile)) return;
+  openClonePicker([profile]);
+};
+
+const cloneSelectedProfiles = () => {
   const selected = voiceProfiles.value.filter((profile) => selectedProfileIds.value.has(profile.id));
-  if (selected.length === 0) return;
-  await Promise.all(selected.map((profile) => cloneProfileToProvider(profile, activeCloneProvider.value)));
+  openClonePicker(selected);
 };
 
 const toggleProviderVoiceFavorite = async (voice: ProviderVoice) => {
@@ -519,6 +710,9 @@ const fetchCloneJobs = async () => {
   try {
     const res: any = await request.get('/jobs', { params: { type: 'tts_clone', limit: 30 } });
     cloneJobs.value = res.data || [];
+    cloneJobs.value
+      .filter((job) => job.status === 'PENDING' || job.status === 'RUNNING')
+      .forEach((job) => trackCloneJob(job.id, job.target_id ? Number(job.target_id) : undefined));
   } catch (error) {
     console.error('Failed to fetch clone jobs:', error);
     cloneJobs.value = [];
@@ -612,6 +806,9 @@ const submitUpload = async () => {
 };
 
 onMounted(refreshAll);
+onBeforeUnmount(() => {
+  [...cloneJobPollers.keys()].forEach(stopCloneJobPolling);
+});
 </script>
 
 <template>
@@ -677,14 +874,18 @@ onMounted(refreshAll);
           <div class="panel-title-row">
             <h3>音色资产</h3>
             <div class="panel-actions">
-              <select v-model="cloneTargetProvider" class="select-input compact">
-                <option v-for="provider in cloneProviderOptions" :key="provider.value" :value="provider.value">
-                  {{ provider.label }}
-                </option>
-              </select>
+              <label class="select-all-control">
+                <input
+                  type="checkbox"
+                  :checked="allFilteredProfilesSelected"
+                  :disabled="selectableFilteredProfiles.length === 0"
+                  @change="toggleAllFilteredProfiles"
+                />
+                <span>全选</span>
+              </label>
               <button
                 class="btn btn-outline"
-                :disabled="selectedProfileIds.size === 0"
+                :disabled="selectedProfileIds.size === 0 || cloneProviderOptions.length === 0"
                 @click="cloneSelectedProfiles"
               >
                 批量克隆
@@ -742,7 +943,7 @@ onMounted(refreshAll);
             </div>
             <button
               class="btn btn-outline"
-              :disabled="!profile.sample_audio_url || isProfileCloning(profile)"
+              :disabled="!profile.sample_audio_url || isProfileCloning(profile) || cloneProviderOptions.length === 0"
               @click.stop="cloneProfileToProvider(profile)"
             >
               {{ isProfileCloning(profile) ? '克隆中' : '克隆' }}
@@ -798,6 +999,7 @@ onMounted(refreshAll);
                 <span v-if="isFavoriteKey(favoriteKeyForProviderVoice(voice))" class="chip favorite-chip">收藏</span>
                 <span class="chip">{{ voice.provider }}</span>
                 <span v-if="!isProviderSynthAvailable(voice.provider)" class="chip unavailable-chip" :title="providerUnavailableReason(voice.provider)">不可配音</span>
+                <span v-if="voice.kind !== 'system' && voice.projection_confirmed === false" class="chip unavailable-chip" title="远端音色未匹配到本地音色资产">未匹配资产</span>
                 <span class="chip">{{ voice.kind === 'system' ? '系统预置' : '克隆音色' }}</span>
                 <span class="chip" :class="statusClass(voice.status)">{{ statusLabel(voice.status) }}</span>
               </div>
@@ -923,10 +1125,10 @@ onMounted(refreshAll);
           <div class="detail-actions">
             <button
               class="btn btn-primary"
-              :disabled="!detailItem.data.sample_audio_url || isProfileCloning(detailItem.data)"
+              :disabled="!detailItem.data.sample_audio_url || isProfileCloning(detailItem.data) || cloneProviderOptions.length === 0"
               @click="cloneProfileToProvider(detailItem.data)"
             >
-              {{ isProfileCloning(detailItem.data) ? '正在克隆' : `克隆到 ${activeCloneProvider}` }}
+              {{ isProfileCloning(detailItem.data) ? '正在克隆' : '克隆' }}
             </button>
           </div>
         </template>
@@ -978,6 +1180,50 @@ onMounted(refreshAll);
           <span>查看样本、平台投影、任务进度和 provider 元数据。</span>
         </div>
       </aside>
+    </div>
+
+    <div v-if="clonePickerVisible" class="modal-backdrop" @click.self="closeClonePicker">
+      <div class="clone-modal">
+        <div class="modal-header">
+          <div>
+            <span class="detail-kicker">CLONE VOICE</span>
+            <h3>{{ clonePickerProfiles.length > 1 ? `克隆 ${clonePickerProfiles.length} 个音色资产` : `克隆「${clonePickerProfiles[0]?.name || '音色资产'}」` }}</h3>
+          </div>
+          <button class="close-btn" :disabled="cloneSubmitting" @click="closeClonePicker">×</button>
+        </div>
+
+        <div class="provider-choice-list">
+          <button
+            v-for="provider in cloneProviderOptions"
+            :key="provider.value"
+            class="provider-choice"
+            :class="{ active: clonePickerProvider === provider.value }"
+            @click="clonePickerProvider = provider.value; cloneTargetProvider = provider.value"
+          >
+            <span>{{ provider.label }}</span>
+            <span class="mono-text">{{ provider.value }}</span>
+          </button>
+        </div>
+
+        <div class="clone-summary">
+          <strong>{{ selectedCloneProviderLabel }}</strong>
+          <span>{{ clonePickerCloneableProfiles.length }} 个将开始克隆</span>
+          <span v-if="clonePickerAlreadyClonedProfiles.length > 0">
+            {{ clonePickerAlreadyClonedProfiles.length }} 个已在该平台克隆，将跳过
+          </span>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn btn-outline" :disabled="cloneSubmitting" @click="closeClonePicker">取消</button>
+          <button
+            class="btn btn-primary"
+            :disabled="cloneSubmitting || clonePickerCloneableProfiles.length === 0"
+            @click="submitClonePicker"
+          >
+            {{ cloneSubmitting ? '提交中…' : '开始克隆' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <div v-if="uploadVisible" class="modal-backdrop" @click.self="closeUpload">
@@ -1088,10 +1334,38 @@ onMounted(refreshAll);
 .tabs,
 .row-title,
 .row-sub,
-.projection-stack {
+.projection-stack,
+.clone-target-control {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.clone-target-control {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.select-all-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.select-all-control input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-cyan);
+}
+
+.select-all-control:has(input:disabled) {
+  opacity: 0.45;
 }
 
 .btn,
@@ -1650,13 +1924,18 @@ onMounted(refreshAll);
   background: rgba(0, 0, 0, 0.68);
 }
 
-.upload-modal {
+.upload-modal,
+.clone-modal {
   width: min(720px, 100%);
   background: var(--bg-panel);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
   padding: 18px;
+}
+
+.clone-modal {
+  width: min(520px, 100%);
 }
 
 .modal-header,
@@ -1674,6 +1953,46 @@ onMounted(refreshAll);
   border: 1px solid var(--border-color);
   border-radius: 50%;
   color: var(--text-muted);
+}
+
+.provider-choice-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+
+.provider-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  text-align: left;
+}
+
+.provider-choice.active,
+.provider-choice:hover {
+  border-color: rgba(0, 212, 170, 0.55);
+  color: var(--text-primary);
+  background: rgba(0, 212, 170, 0.06);
+}
+
+.clone-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.clone-summary strong {
+  color: var(--text-primary);
 }
 
 .form-grid {

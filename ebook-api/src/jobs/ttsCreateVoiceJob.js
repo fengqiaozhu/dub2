@@ -2,13 +2,27 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 const { parentPort, workerData } = require('worker_threads');
 const fs = require('fs');
 const ttsService = require('../services/tts');
-const { providerVoiceRepository } = require('../repositories');
+const {
+  providerVoiceRepository,
+  voiceProfileRepository
+} = require('../repositories');
+const {
+  buildMarker,
+  ensureProfileSampleHash
+} = require('../services/tts/voiceProfileIdentity');
 
 const { jobId, jobName, params } = workerData;
 
 (async () => {
   try {
     console.log(`[ttsCreateVoiceJob] Start creating ${params.provider || 'mosi'} voice clone for job ${jobId}`);
+    const profile = params.voice_profile_id
+      ? voiceProfileRepository.findById(params.voice_profile_id)
+      : null;
+    if (profile) {
+      ensureProfileSampleHash(profile, voiceProfileRepository);
+    }
+    const marker = profile ? buildMarker(profile) : null;
 
     const result = await ttsService.cloneVoice({
       provider: params.provider || 'mosi',
@@ -18,6 +32,7 @@ const { jobId, jobName, params } = workerData;
       name: params.name,
       description: params.description,
       voice_profile_id: params.voice_profile_id,
+      marker,
       onProgress: (progress) => {
         parentPort.postMessage({ type: 'PROGRESS', jobId, value: progress });
       }
@@ -31,8 +46,16 @@ const { jobId, jobName, params } = workerData;
         provider_model: result.model,
         kind: 'clone',
         status: result.status,
-        provider_meta: result
+        provider_meta: {
+          ...result,
+          marker
+        }
       });
+      try {
+        await ttsService.syncProviderCloneVoices({ provider: params.provider || 'mosi' });
+      } catch (syncError) {
+        console.warn(`[ttsCreateVoiceJob] Failed to sync ${params.provider || 'mosi'} voices after clone:`, syncError.message);
+      }
     }
 
     if (params.cleanupFile !== false && fs.existsSync(params.filePath)) {

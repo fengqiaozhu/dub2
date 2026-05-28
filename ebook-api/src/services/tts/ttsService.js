@@ -1,6 +1,28 @@
 const providerRegistry = require('./providerRegistry');
 const { normalizeIntent } = require('./ttsIntent');
 const { planForProvider } = require('./ttsPlanner');
+const {
+  ensureProfileSampleHash,
+  extractMarker,
+  isMarkerMatch
+} = require('./voiceProfileIdentity');
+const {
+  providerVoiceRepository,
+  voiceProfileRepository
+} = require('../../repositories');
+
+function normalizeStatus(status) {
+  const value = String(status || 'UNKNOWN').toUpperCase();
+  if (value === 'ACTIVE' || value === 'DONE' || value === 'TRAINED') return 'DONE';
+  if (value === 'PENDING' || value === 'RUNNING' || value === 'TRAINING' || value === 'CREATED') return 'PENDING';
+  if (value === 'FAILED') return 'FAILED';
+  return value;
+}
+
+function matchesStatus(voice, status) {
+  if (!status) return true;
+  return normalizeStatus(voice.status) === normalizeStatus(status);
+}
 
 class TtsService {
   getProviders() {
@@ -50,8 +72,104 @@ class TtsService {
   }
 
   async listVoices(params = {}) {
+    const kind = params.kind || 'all';
+    if (kind === 'clone' || kind === 'custom') {
+      return this.syncProviderCloneVoices(params);
+    }
+
     const provider = this.getProvider(params.provider || 'mosi');
     return provider.listVoices(params);
+  }
+
+  async syncProviderCloneVoices(params = {}) {
+    const providerId = params.provider || 'mosi';
+    const provider = this.getProvider(providerId);
+    const pageSize = 100;
+    let offset = 0;
+    let total = null;
+    const remoteVoices = [];
+
+    for (let page = 0; page < 50; page += 1) {
+      const result = await provider.listVoices({
+        kind: 'clone',
+        limit: pageSize,
+        offset
+      });
+      const voices = result.voices || [];
+      remoteVoices.push(...voices);
+
+      const numericTotal = Number(result.total);
+      total = Number.isFinite(numericTotal) ? numericTotal : total;
+      offset += voices.length;
+
+      const hasMore = total !== null ? offset < total : voices.length >= pageSize;
+      if (!hasMore || voices.length === 0) break;
+    }
+
+    const confirmedVoiceIds = [];
+    const syncedVoices = remoteVoices.map((voice) => {
+      const providerVoiceId = voice.provider_voice_id || voice.voice_id || voice.voiceId || voice.id;
+      const existingProviderVoice = providerVoiceId
+        ? providerVoiceRepository.findByProviderVoiceId(providerId, providerVoiceId)
+        : null;
+      const markerInfo = extractMarker(voice) || extractMarker(existingProviderVoice?.provider_meta);
+      const profile = markerInfo ? voiceProfileRepository.findById(markerInfo.voice_profile_id) : null;
+      if (profile) {
+        ensureProfileSampleHash(profile, voiceProfileRepository);
+      }
+
+      if (providerVoiceId && profile && isMarkerMatch(profile, markerInfo)) {
+        confirmedVoiceIds.push(providerVoiceId);
+        providerVoiceRepository.upsert({
+          voice_profile_id: profile.id,
+          provider: providerId,
+          provider_voice_id: providerVoiceId,
+          provider_model: voice.provider_model || voice.model,
+          kind: 'clone',
+          status: normalizeStatus(voice.status),
+          capabilities_snapshot: voice.capabilities_snapshot,
+          provider_meta: {
+            marker: markerInfo.marker,
+            remote: voice.raw || voice
+          }
+        });
+
+        return {
+          ...voice,
+          voice_profile_id: profile.id,
+          voice_profile_name: profile.name,
+          name: profile.name || voice.name,
+          marker: markerInfo.marker,
+          projection_confirmed: true,
+          status: normalizeStatus(voice.status)
+        };
+      }
+
+      return {
+        ...voice,
+        projection_confirmed: false,
+        status: normalizeStatus(voice.status)
+      };
+    });
+
+    providerVoiceRepository.deleteMissingForProvider(providerId, confirmedVoiceIds);
+
+    const filtered = syncedVoices.filter((voice) => matchesStatus(voice, params.status));
+    const limit = Math.max(1, parseInt(params.limit, 10) || 50);
+    const resultOffset = Math.max(0, parseInt(params.offset, 10) || 0);
+
+    return {
+      provider: providerId,
+      kind: 'clone',
+      voices: filtered.slice(resultOffset, resultOffset + limit),
+      total: filtered.length,
+      page_size: limit,
+      offset: resultOffset,
+      synced: {
+        confirmed: confirmedVoiceIds.length,
+        deleted_missing: true
+      }
+    };
   }
 
   async cloneVoice(params = {}) {

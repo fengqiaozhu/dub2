@@ -36,6 +36,10 @@ type ProviderStatus = {
   synthesis_available: boolean;
   reason?: string | null;
 };
+type ProviderProjection = {
+  provider: string;
+  status?: string;
+};
 type PageState = {
   offset: number;
   hasMore: boolean;
@@ -155,7 +159,7 @@ const avatarColor = (name: string) => {
 
 const providerStatusChips = (profile: any) => {
   if (!profile.provider_statuses) return [];
-  return String(profile.provider_statuses).split(',').filter(Boolean).map((item) => {
+  return String(profile.provider_statuses).split(',').filter(Boolean).map((item): ProviderProjection => {
     const [provider, status] = item.split(':');
     return { provider, status };
   });
@@ -175,7 +179,30 @@ const usageForKey = (key: string) => usageMap.value.get(key);
 const providerStatusFor = (provider: string) => providerStatuses.value[provider];
 const isProviderSynthAvailable = (provider: string) => providerStatusFor(provider)?.synthesis_available !== false;
 const providerUnavailableReason = (provider: string) => providerStatusFor(provider)?.reason || '该平台当前不可配音';
-const canSelectProviderVoice = (voice: any) => isProviderSynthAvailable(voice.provider);
+const providerDisplayName = (provider: string) => (
+  providers.value.find((item: any) => item.provider === provider)?.displayName || provider
+);
+const isConfirmedProviderVoice = (voice: any) => voice.kind === 'system' || voice.projection_confirmed !== false;
+const providerVoiceUnavailableReason = (voice: any) => {
+  if (!isProviderSynthAvailable(voice.provider)) return providerUnavailableReason(voice.provider);
+  if (!isConfirmedProviderVoice(voice)) return '未匹配到本地音色资产';
+  return '';
+};
+const canSelectProviderVoice = (voice: any) => isProviderSynthAvailable(voice.provider) && isConfirmedProviderVoice(voice);
+const canSelectAssetProjection = (projection: ProviderProjection) => (
+  isUsableStatus(projection.status) && isProviderSynthAvailable(projection.provider)
+);
+const selectableAssetProjections = (profile: any) => providerStatusChips(profile).filter(canSelectAssetProjection);
+const assetProjectionReason = (projection: ProviderProjection) => {
+  if (!isProviderSynthAvailable(projection.provider)) return providerUnavailableReason(projection.provider);
+  if (!isUsableStatus(projection.status)) return statusLabel(projection.status);
+  return `绑定到 ${providerDisplayName(projection.provider)}`;
+};
+const isSelectedAssetProjection = (profile: any, projection: ProviderProjection) => (
+  pendingBinding.value?.voice_profile_id === profile.id
+  && pendingBinding.value?.provider === projection.provider
+  && !pendingBinding.value?.provider_voice_id
+);
 const pendingBindingAvailable = computed(() => (
   !pendingBinding.value || isProviderSynthAvailable(pendingBinding.value.provider || 'mosi')
 ));
@@ -395,17 +422,24 @@ const togglePlatformFavorite = async (voice: any) => {
   }
 };
 
-const selectAsset = (profile: any) => {
-  const projection = providerStatusChips(profile)[0];
+const selectAssetProjection = (profile: any, projection: ProviderProjection) => {
+  if (!canSelectAssetProjection(projection)) return;
   pendingBinding.value = {
     voice_id: '',
-    provider: projection?.provider || 'mosi',
+    provider: projection.provider,
     provider_voice_id: null,
     voice_source: 'clone',
     voice_profile_id: profile.id,
     display_name: profile.name,
-    status: projection ? statusLabel(projection.status) : '需克隆',
+    status: `${providerDisplayName(projection.provider)} ${statusLabel(projection.status)}`,
   };
+};
+
+const selectAsset = (profile: any) => {
+  const projections = selectableAssetProjections(profile);
+  if (projections.length === 1) {
+    selectAssetProjection(profile, projections[0]);
+  }
 };
 
 const selectPlatformVoice = (voice: any) => {
@@ -520,7 +554,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
                     </span>
                     <span class="v-tag tag-lang mono-text">{{ profile.language || 'LANG?' }}</span>
                     <span v-if="providerStatusChips(profile).length === 0" class="v-tag tag-pending">需克隆</span>
-                    <span v-for="chip in providerStatusChips(profile)" :key="chip.provider" class="v-tag tag-active">{{ chip.provider }} {{ statusLabel(chip.status) }}</span>
+                    <button
+                      v-for="chip in providerStatusChips(profile)"
+                      :key="chip.provider"
+                      type="button"
+                      class="v-tag asset-provider-chip"
+                      :class="{
+                        'tag-active': canSelectAssetProjection(chip),
+                        'tag-pending': !canSelectAssetProjection(chip),
+                        selected: isSelectedAssetProjection(profile, chip)
+                      }"
+                      :disabled="!canSelectAssetProjection(chip)"
+                      :title="assetProjectionReason(chip)"
+                      @click.stop="selectAssetProjection(profile, chip)"
+                    >
+                      {{ providerDisplayName(chip.provider) }} {{ statusLabel(chip.status) }}
+                    </button>
                   </div>
                 </div>
                 <button
@@ -570,10 +619,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
                       {{ usageForKey(favoriteKeyForVoice(voice))?.dialogue_count }} 对白
                     </span>
                     <span class="v-tag tag-lang mono-text">{{ voice.provider }}</span>
-                    <span v-if="!canSelectProviderVoice(voice)" class="v-tag tag-disabled">不可配音</span>
+                    <span v-if="!canSelectProviderVoice(voice)" class="v-tag tag-disabled">不可绑定</span>
                     <span class="v-tag" :class="voice.kind === 'system' ? 'tag-gender' : 'tag-clone'">{{ voice.kind === 'system' ? '系统预置' : '克隆' }}</span>
                     <span class="v-tag" :class="isUsableStatus(voice.status) ? 'tag-active' : 'tag-pending'">{{ statusLabel(voice.status) }}</span>
-                    <span v-if="!canSelectProviderVoice(voice)" class="v-tag tag-disabled-reason">{{ providerUnavailableReason(voice.provider) }}</span>
+                    <span v-if="!canSelectProviderVoice(voice)" class="v-tag tag-disabled-reason">{{ providerVoiceUnavailableReason(voice) }}</span>
                   </div>
                 </div>
                 <button
@@ -668,6 +717,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 .v-name { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .v-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .v-tag { font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 3px; letter-spacing: 0; }
+.asset-provider-chip { cursor: pointer; }
+.asset-provider-chip:disabled { cursor: not-allowed; opacity: .72; }
+.asset-provider-chip.selected { box-shadow: 0 0 0 1px var(--accent-cyan); }
 .tag-favorite { background: rgba(250,204,21,.12); color: #facc15; border: 1px solid rgba(250,204,21,.25); }
 .tag-usage { background: rgba(0,212,170,.12); color: var(--accent-cyan); border: 1px solid rgba(0,212,170,.24); }
 .tag-gender { background: rgba(139,92,246,.12); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); }

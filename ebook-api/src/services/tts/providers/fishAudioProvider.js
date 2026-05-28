@@ -1,4 +1,5 @@
 const fishAudioService = require('../../fishAudioService');
+const { extractMarker } = require('../voiceProfileIdentity');
 
 function proxyMediaUrl(url) {
   if (!url || !String(url).startsWith('http')) return url;
@@ -20,12 +21,15 @@ function normalizeVoice(voice, kind = 'clone') {
     created: 'PENDING'
   };
   const status = statusMap[String(voice.state || '').toLowerCase()] || voice.state || 'UNKNOWN';
+  const markerInfo = extractMarker(voice);
 
   return {
     id: voice._id,
     provider: 'fish_audio',
     provider_voice_id: voice._id,
     name: voice.title || '未命名',
+    voice_profile_id: markerInfo?.voice_profile_id || null,
+    marker: markerInfo?.marker,
     source: kind,
     raw: voice,
     status,
@@ -127,8 +131,8 @@ class FishAudioProvider {
     };
   }
 
-  async cloneVoice({ filePath, text = '', name, description, onProgress }) {
-    return fishAudioService.cloneVoice({ filePath, text, name, description, onProgress });
+  async cloneVoice({ filePath, text = '', name, description, marker, onProgress }) {
+    return fishAudioService.cloneVoice({ filePath, text, name, description, marker, onProgress });
   }
 
   async synthesize({ text, voiceId, model, options = {} }) {

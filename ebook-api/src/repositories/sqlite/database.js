@@ -126,6 +126,7 @@ class SQLiteDatabase {
         description TEXT,
         sample_text TEXT,
         sample_audio_url TEXT,
+        sample_hash TEXT,
         language TEXT,
         speaker_meta TEXT,
         consent_status TEXT NOT NULL DEFAULT 'unknown',
@@ -208,6 +209,7 @@ class SQLiteDatabase {
       `ALTER TABLE character_voice_bindings ADD COLUMN voice_profile_id INTEGER;`,
       `ALTER TABLE character_voice_bindings ADD COLUMN tts_model TEXT;`,
       `ALTER TABLE character_voice_bindings ADD COLUMN intent_defaults TEXT;`,
+      `ALTER TABLE voice_profiles ADD COLUMN sample_hash TEXT;`,
       // Book metadata fields
       `ALTER TABLE books ADD COLUMN author TEXT;`,
       `ALTER TABLE books ADD COLUMN description TEXT;`,

@@ -29,7 +29,31 @@ function resolveBinding(binding, options = {}) {
 
   if (providerVoiceId) {
     const providerVoice = providerVoiceRepository.findByProviderVoiceId(provider, providerVoiceId);
-    if (options.requireActive && providerVoice && !isActive(providerVoice.status)) {
+    if (binding.voice_source === 'system') {
+      return {
+        ready: true,
+        status: 'ready',
+        source: 'provider_voice',
+        provider,
+        voiceId: providerVoiceId,
+        providerVoiceId,
+        voiceProfileId: null,
+        model: binding.tts_model || providerVoice?.provider_model || undefined,
+        intent: parseJson(binding.intent_defaults),
+        providerVoice
+      };
+    }
+    if (!providerVoice) {
+      return {
+        ready: false,
+        status: 'provider_voice_missing',
+        message: `${provider} 音色 ${providerVoiceId} 未在当前平台账号中确认存在`,
+        binding,
+        provider,
+        providerVoiceId
+      };
+    }
+    if (!isActive(providerVoice.status)) {
       return {
         ready: false,
         status: 'provider_voice_not_ready',

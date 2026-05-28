@@ -3,6 +3,7 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { extractMarker } = require('./tts/voiceProfileIdentity');
 
 const DEFAULT_BASE_URL = 'http://localhost:8080';
 const DEFAULT_FORMAT = process.env.FISH_SELF_HOSTED_DEFAULT_FORMAT || 'wav';
@@ -36,6 +37,8 @@ function buildReferenceIdForProfile(voiceProfileId) {
 
 function parseVoiceProfileId(referenceId) {
   const value = String(referenceId || '');
+  const markerReferenceMatch = /^vf[:_](\d+)(?:[:_][a-f0-9]{8})?$/i.exec(value);
+  if (markerReferenceMatch) return Number(markerReferenceMatch[1]);
   if (!value.startsWith(REFERENCE_PREFIX)) return null;
   const id = value.slice(REFERENCE_PREFIX.length);
   return /^\d+$/.test(id) ? Number(id) : null;
@@ -47,20 +50,15 @@ function getRepositories() {
 
 function normalizeReferenceVoice(reference) {
   const referenceId = getReferenceId(reference);
-  const voiceProfileId = parseVoiceProfileId(referenceId);
-  if (!voiceProfileId) return null;
+  const markerInfo = extractMarker(reference) || extractMarker(referenceId);
+  const voiceProfileId = markerInfo?.voice_profile_id || parseVoiceProfileId(referenceId);
+  if (!voiceProfileId || !markerInfo) return null;
 
   const {
-    providerVoiceRepository,
     voiceProfileRepository
   } = getRepositories();
   const profile = voiceProfileRepository.findById(voiceProfileId);
   if (!profile) return null;
-
-  const providerVoice = providerVoiceRepository.findByProviderVoiceId(
-    'fish_audio_self_hosted',
-    referenceId
-  );
 
   return {
     id: referenceId,
@@ -69,15 +67,15 @@ function normalizeReferenceVoice(reference) {
     voice_profile_id: profile.id,
     name: profile.name,
     voice_profile_name: profile.name,
+    marker: markerInfo.marker,
     source: 'clone',
     kind: 'clone',
-    status: providerVoice?.status || 'DONE',
+    status: 'DONE',
     sample_audio_url: profile.sample_audio_url,
     sample_text: profile.sample_text,
     language: profile.language,
     consent_status: profile.consent_status,
-    raw: typeof reference === 'object' ? reference : { reference_id: referenceId },
-    provider_meta: providerVoice?.provider_meta
+    raw: typeof reference === 'object' ? reference : { reference_id: referenceId }
   };
 }
 
@@ -90,15 +88,31 @@ function formatErrorMessage(error) {
   return error.message || 'Fish Audio self-hosted server is unavailable';
 }
 
-function buildReferenceId({ name, filePath, voiceProfileId }) {
+function sanitizeReferenceId(value) {
+  return String(value || '')
+    .replace(/[^a-zA-Z0-9 _-]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s_]+|[\s_]+$/g, '')
+    .slice(0, 96);
+}
+
+function buildReferenceIdFromMarker(marker) {
+  const markerInfo = extractMarker(marker);
+  if (markerInfo) {
+    return `vf_${markerInfo.voice_profile_id}_${markerInfo.sample_hash_prefix}`;
+  }
+  return sanitizeReferenceId(marker);
+}
+
+function buildReferenceId({ name, filePath, voiceProfileId, marker }) {
+  if (marker) {
+    const markerReferenceId = buildReferenceIdFromMarker(marker);
+    if (markerReferenceId) return markerReferenceId;
+  }
   if (voiceProfileId) return buildReferenceIdForProfile(voiceProfileId);
 
   const source = name || path.basename(filePath || '', path.extname(filePath || '')) || 'voice';
-  const safeName = source
-    .replace(/\.[^.]+$/, '')
-    .replace(/[^a-zA-Z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 48);
+  const safeName = sanitizeReferenceId(source.replace(/\.[^.]+$/, '')).slice(0, 48);
   return `${safeName || 'voice'}_${randomUUID().slice(0, 8)}`;
 }
 
@@ -177,7 +191,7 @@ class FishAudioSelfHostedService {
     };
   }
 
-  async cloneVoice({ filePath, text = '', name, voice_profile_id, onProgress }) {
+  async cloneVoice({ filePath, text = '', name, voice_profile_id, marker, onProgress }) {
     if (!filePath) {
       throw new Error('filePath is required');
     }
@@ -186,7 +200,7 @@ class FishAudioSelfHostedService {
     }
 
     if (onProgress) onProgress(10);
-    const referenceId = buildReferenceId({ name, filePath, voiceProfileId: voice_profile_id });
+    const referenceId = buildReferenceId({ name, filePath, voiceProfileId: voice_profile_id, marker });
     const form = new FormData();
     form.append('id', referenceId);
     form.append('audio', fs.createReadStream(filePath));
@@ -204,6 +218,7 @@ class FishAudioSelfHostedService {
       model: 's2-pro',
       status: 'DONE',
       state: 'DONE',
+      marker,
       raw: response.data || { reference_id: referenceId }
     };
   }

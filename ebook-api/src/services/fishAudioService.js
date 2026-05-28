@@ -3,6 +3,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createReadStream } = require('fs');
 const axios = require('axios');
+const { appendMarker } = require('./tts/voiceProfileIdentity');
 
 const DEFAULT_MODEL = process.env.FISH_DEFAULT_MODEL || 's2-pro';
 const DEFAULT_FORMAT = process.env.FISH_DEFAULT_FORMAT || 'mp3';
@@ -127,7 +128,7 @@ class FishAudioService {
     }
   }
 
-  async cloneVoice({ filePath, text = '', name, description, onProgress }) {
+  async cloneVoice({ filePath, text = '', name, description, marker, onProgress }) {
     if (!filePath) {
       throw new Error('filePath is required');
     }
@@ -139,7 +140,7 @@ class FishAudioService {
       visibility: 'private',
       enhance_audio_quality: true
     };
-    if (description) request.description = description;
+    if (description || marker) request.description = appendMarker(description, marker);
     if (text) request.texts = [text];
 
     const client = await this.getClient();
@@ -152,6 +153,7 @@ class FishAudioService {
       model: DEFAULT_MODEL,
       status: normalizeVoiceState(response.state),
       state: response.state,
+      marker,
       raw: response
     };
   }
