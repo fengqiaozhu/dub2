@@ -1,6 +1,6 @@
-# Dub2 Ebook
+# dub
 
-Dub2 Ebook is an ebook dubbing workspace. It combines a Vue workspace with an Express API that stores metadata in PostgreSQL, stores media in S3-compatible object storage, parses ebooks, analyzes chapters, generates TTS audio, and exports chapter audio.
+dub is an ebook dubbing workspace. It combines a Vue workspace with an Express API that stores metadata in PostgreSQL, stores media in S3-compatible object storage, parses ebooks, analyzes chapters, generates TTS audio, and exports chapter audio.
 
 ## Project Structure
 

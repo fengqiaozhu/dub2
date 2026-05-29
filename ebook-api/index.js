@@ -42,7 +42,7 @@ app.use('/api/jobs', jobRoutes);
     await jobManager.start();
     
     app.listen(port, () => {
-      console.log(`Ebook API server running at http://localhost:${port}`);
+      console.log(`dub API server running at http://localhost:${port}`);
     });
   } catch (err) {
     console.error('Failed to start server:', err);

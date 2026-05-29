@@ -5,7 +5,7 @@ import { useBookStore } from '@/stores/bookStore';
 
 const route = useRoute();
 const bookStore = useBookStore();
-const STORAGE_KEY = 'voiceforge.sidebar.collapsed';
+const STORAGE_KEY = 'dub.sidebar.collapsed';
 const collapsed = ref(false);
 
 const menuItems = computed(() => [
@@ -30,13 +30,8 @@ watch(collapsed, (value) => {
   <aside class="sidebar" :class="{ collapsed }">
     <div class="logo">
       <div class="logo-icon">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="var(--accent-cyan)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M2 17L12 22L22 17" stroke="var(--accent-cyan)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M2 12L12 17L22 12" stroke="var(--accent-cyan)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
+        <img src="/logo-mark.png" alt="dub logo">
       </div>
-      <span class="logo-text">VoiceForge <span class="logo-sub">AI-STUDIO</span></span>
     </div>
 
     <div class="menu-group">
@@ -110,29 +105,59 @@ watch(collapsed, (value) => {
 }
 
 .logo {
-  height: 64px;
+  height: 88px;
   display: flex;
   align-items: center;
-  padding: 0 var(--space-3);
+  justify-content: center;
+  padding: 0;
   border-bottom: 1px solid var(--border-color);
-  gap: var(--space-1);
   min-width: 0;
 }
 
-.logo-text {
-  font-weight: 700;
-  font-size: 16px;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
+.logo-icon {
+  width: 196px;
+  height: 72px;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
-.logo-sub {
-  color: var(--accent-cyan);
-  font-size: 10px;
-  vertical-align: super;
-  margin-left: 4px;
-  font-family: var(--font-mono);
+.logo-icon img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  transform-origin: 50% 80%;
+  animation: logo-wiggle 3.8s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes logo-wiggle {
+  0%,
+  72%,
+  100% {
+    transform: rotate(0deg) translateY(0);
+  }
+  76% {
+    transform: rotate(-3deg) translateY(-1px);
+  }
+  80% {
+    transform: rotate(3deg) translateY(0);
+  }
+  84% {
+    transform: rotate(-2deg) translateY(-1px);
+  }
+  88% {
+    transform: rotate(2deg) translateY(0);
+  }
+  92% {
+    transform: rotate(0deg) translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo-icon img {
+    animation: none;
+  }
 }
 
 .collapse-btn {
@@ -161,12 +186,9 @@ watch(collapsed, (value) => {
   padding: 0;
 }
 
-.sidebar.collapsed .logo-text {
-  display: none;
-}
-
 .sidebar.collapsed .logo-icon {
-  display: flex;
+  width: 64px;
+  height: 64px;
 }
 
 .sidebar.collapsed .collapse-btn {
