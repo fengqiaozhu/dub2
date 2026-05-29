@@ -8,19 +8,47 @@ const { mediaUrlForKey } = require('./storage/keyBuilder');
 
 class MosiService {
   constructor() {
-    this.baseUrl = process.env.MOSI_BASE_URL || 'https://studio.mosi.cn';
-    this.apiKey = process.env.MOSI_API_KEY;
-    
     this.audioDir = null;
   }
 
-  getHeaders(isFormData = false) {
-    if (!this.apiKey) {
+  async getActiveConfig() {
+    try {
+      const { ttsConfigRepository } = require('../repositories');
+      const activeDbConfig = await ttsConfigRepository.findActiveByProvider('mosi');
+      if (activeDbConfig) {
+        return {
+          baseUrl: activeDbConfig.api_url || 'https://studio.mosi.cn',
+          apiKey: activeDbConfig.api_key
+        };
+      }
+    } catch (err) {
+      console.warn('Failed to fetch active Mosi config from tts_configs:', err.message);
+    }
+
+    // Fallback directly to environment variables
+    const baseUrl = process.env.MOSI_BASE_URL || 'https://studio.mosi.cn';
+    const apiKey = process.env.MOSI_API_KEY;
+    return { baseUrl, apiKey };
+  }
+
+  async getBaseUrl() {
+    const config = await this.getActiveConfig();
+    return config.baseUrl;
+  }
+
+  async getApiKey() {
+    const config = await this.getActiveConfig();
+    return config.apiKey;
+  }
+
+  async getHeaders(isFormData = false) {
+    const apiKey = await this.getApiKey();
+    if (!apiKey) {
       throw new Error('MOSI_API_KEY is not configured');
     }
     
     const headers = {
-      'Authorization': `Bearer ${this.apiKey}`,
+      'Authorization': `Bearer ${apiKey}`,
     };
     
     if (!isFormData) {
@@ -40,9 +68,11 @@ class MosiService {
         filename: fileName || path.basename(filePath)
       });
 
-      const response = await axios.post(`${this.baseUrl}/api/v1/files/upload`, form, {
+      const baseUrl = await this.getBaseUrl();
+      const headers = await this.getHeaders(true);
+      const response = await axios.post(`${baseUrl}/api/v1/files/upload`, form, {
         headers: {
-          ...this.getHeaders(true),
+          ...headers,
           ...form.getHeaders()
         }
       });
@@ -64,8 +94,10 @@ class MosiService {
         payload.text = text;
       }
 
-      const response = await axios.post(`${this.baseUrl}/api/v1/voice/clone`, payload, {
-        headers: this.getHeaders()
+      const baseUrl = await this.getBaseUrl();
+      const headers = await this.getHeaders();
+      const response = await axios.post(`${baseUrl}/api/v1/voice/clone`, payload, {
+        headers
       });
 
       return response.data;
@@ -80,8 +112,10 @@ class MosiService {
    */
   async getVoice(voiceId) {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/v1/voices/${voiceId}`, {
-        headers: this.getHeaders()
+      const baseUrl = await this.getBaseUrl();
+      const headers = await this.getHeaders();
+      const response = await axios.get(`${baseUrl}/api/v1/voices/${voiceId}`, {
+        headers
       });
       return response.data;
     } catch (error) {
@@ -150,8 +184,10 @@ class MosiService {
         params.append('status', status);
       }
 
-      const response = await axios.get(`${this.baseUrl}/api/v1/voices?${params.toString()}`, {
-        headers: this.getHeaders()
+      const baseUrl = await this.getBaseUrl();
+      const headers = await this.getHeaders();
+      const response = await axios.get(`${baseUrl}/api/v1/voices?${params.toString()}`, {
+        headers
       });
 
       return response.data;
@@ -170,8 +206,10 @@ class MosiService {
         limit: limit.toString(),
         offset: offset.toString()
       });
-      const response = await axios.get(`${this.baseUrl}/studio-api/v1/voices?${params.toString()}`, {
-        headers: this.getHeaders()
+      const baseUrl = await this.getBaseUrl();
+      const headers = await this.getHeaders();
+      const response = await axios.get(`${baseUrl}/studio-api/v1/voices?${params.toString()}`, {
+        headers
       });
       return response.data;
     } catch (error) {
@@ -202,8 +240,10 @@ class MosiService {
         payload.expected_duration_sec = options.expected_duration_sec;
       }
 
-      const response = await axios.post(`${this.baseUrl}/api/v1/audio/speech`, payload, {
-        headers: this.getHeaders(),
+      const baseUrl = await this.getBaseUrl();
+      const headers = await this.getHeaders();
+      const response = await axios.post(`${baseUrl}/api/v1/audio/speech`, payload, {
+        headers,
         timeout: 600000 // 10 mins as per docs (600s)
       });
 

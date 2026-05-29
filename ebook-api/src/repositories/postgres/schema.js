@@ -195,6 +195,36 @@ CREATE INDEX IF NOT EXISTS idx_dialogues_segment_id ON dialogues(segment_id);
 CREATE INDEX IF NOT EXISTS idx_chapter_characters_book_id ON chapter_characters(book_id);
 CREATE INDEX IF NOT EXISTS idx_provider_voices_profile_id ON provider_voices(voice_profile_id);
 CREATE INDEX IF NOT EXISTS idx_storage_objects_entity ON storage_objects(entity_type, entity_id);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ai_configs (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  api_url TEXT NOT NULL,
+  api_key TEXT NOT NULL,
+  model TEXT NOT NULL,
+  is_reasoning BOOLEAN NOT NULL DEFAULT FALSE,
+  is_active BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tts_configs (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  api_url TEXT,
+  api_key TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `;
 
 async function initSchema() {

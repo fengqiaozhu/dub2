@@ -23,6 +23,16 @@ const router = createRouter({
       path: '/workspace/:bookId?',
       name: 'workspace',
       component: () => import('../views/Workspace.vue')
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('../views/Settings.vue')
+    },
+    {
+      path: '/chat',
+      name: 'chat',
+      component: () => import('../views/Chat.vue')
     }
   ]
 });

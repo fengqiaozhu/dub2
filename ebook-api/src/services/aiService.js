@@ -3,32 +3,55 @@ const {
   chapterRepository,
   chapterCharacterRepository,
   dialogueRepository,
-  bookCharacterRepository
+  bookCharacterRepository,
+  aiConfigRepository
 } = require('../repositories');
 const { normalizeDialogueContent } = require('./chapterAudioState');
 
 class AiService {
   constructor() {
-    this.chatAiModel = {
-      model: process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro',
-      url: process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com',
-      apiKey: process.env.DEEPSEEK_API_KEY,
-      timeout: parseInt(process.env.DEEPSEEK_TIMEOUT) || 60000,
-    };
-
     this.openai = null;
+    this._cachedKey = null;
   }
 
-  getClient() {
-    if (!this.chatAiModel.apiKey) {
-      throw new Error('DeepSeek API Key is missing in environment variables.');
+  async getActiveConfig() {
+    try {
+      const activeDbConfig = await aiConfigRepository.findActive();
+      if (activeDbConfig) {
+        return {
+          model: activeDbConfig.model,
+          url: activeDbConfig.api_url,
+          apiKey: activeDbConfig.api_key,
+          isReasoning: Boolean(activeDbConfig.is_reasoning),
+          timeout: 60000
+        };
+      }
+    } catch (err) {
+      console.warn('Failed to fetch active AI config from database, falling back to env:', err.message);
     }
-    if (!this.openai) {
+
+    // Fallback to env
+    return {
+      model: process.env.OPEN_AI_MODEL || process.env.OPENAI_MODEL || process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro',
+      url: process.env.OPEN_AI_API_URL || process.env.OPENAI_API_URL || process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com',
+      apiKey: process.env.OPEN_AI_API_KEY || process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY,
+      isReasoning: true, // Default to true for backward compatibility with DeepSeek model
+      timeout: parseInt(process.env.OPEN_AI_TIMEOUT || process.env.OPENAI_TIMEOUT || process.env.DEEPSEEK_TIMEOUT) || 60000,
+    };
+  }
+
+  async getClient(config) {
+    if (!config.apiKey) {
+      throw new Error('OpenAI / DeepSeek API Key is missing in environment variables or database.');
+    }
+    const cacheKey = `${config.url}_${config.apiKey}_${config.timeout}`;
+    if (!this.openai || this._cachedKey !== cacheKey) {
       this.openai = new OpenAI({
-        baseURL: this.chatAiModel.url,
-        apiKey: this.chatAiModel.apiKey,
-        timeout: this.chatAiModel.timeout
+        baseURL: config.url,
+        apiKey: config.apiKey,
+        timeout: config.timeout
       });
+      this._cachedKey = cacheKey;
     }
     return this.openai;
   }
@@ -45,7 +68,7 @@ class AiService {
     }
   }
 
-  parseDeepseekResponse(data) {
+  parseAiResponse(data) {
     try {
       const content = data.choices[0].message.content;
       const cleanContent = content
@@ -73,7 +96,7 @@ class AiService {
         throw new Error('No JSON payload found');
       }
     } catch (err) {
-      console.error('Failed to parse DeepSeek response as JSON:', err.message, data.choices?.[0]?.message?.content);
+      console.error('Failed to parse AI response as JSON:', err.message, data.choices?.[0]?.message?.content);
       throw new Error('AI response is not valid JSON');
     }
   }
@@ -167,25 +190,15 @@ class AiService {
    * 文本分析（使用 DeepSeek，带重试）
    */
   async analyzeText(text) {
-    const endpoint = this.chatAiModel;
+    const config = await this.getActiveConfig();
 
     return this.retryableRequest(async () => {
-      const completion = await this.getClient().chat.completions.create({
-        model: endpoint.model,
+      const client = await this.getClient(config);
+      const payload = {
+        model: config.model,
         messages: [
           {
             role: "system",
-            // content: `你是一个专业文本分析助手，需要将输入的文本分离出文本中的人物和对白。
-            // 严格按以下JSON格式输出，禁止解释，确保字段名和引号完全一致,确保对白严格按照原文中顺序展示，比如：‘“你看看你这个人！”史强大声说，“我们说它不合法了吗？我们说不让你接触了吗？”’要被解析成两句对白，不能合并。并且结果中对白的标点符号严格与原文一致。注意角色名称不要重复：
-            //           [
-            //           {
-            //             "role": "角色名称",
-            //             "dialogues": [
-            //               {"content":"XXXXX"},
-            //               {"content":"XXXXX"}
-            //             ]
-            //           }
-            //          ]`
             content: `# Role
 你是一个极度严谨的文本分析工程师，你的任务是进行“地毯式”的信息提取，将输入文本中的人物、对白以及适合配音的语音表现提示完全分离。
 
@@ -228,12 +241,17 @@ class AiService {
             content: text
           }
         ],
-        thinking: { type: "enabled" },
-        reasoning_effort: "high",
         stream: false,
-      });
+      };
 
-      return this.parseDeepseekResponse(completion);
+      if (config.isReasoning) {
+        payload.thinking = { type: "enabled" };
+        payload.reasoning_effort = "high";
+      }
+
+      const completion = await client.chat.completions.create(payload);
+
+      return this.parseAiResponse(completion);
     });
   }
 

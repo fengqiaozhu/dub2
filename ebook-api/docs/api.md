@@ -165,7 +165,7 @@
 
 ### 3.1 提取章节角色与对白（异步任务）
 **POST** `/api/chapters/:id/analyze`
-- **说明**: 触发 DeepSeek AI 大模型，对指定章节进行角色提取和对话抽离。分析结果写入结构化表（`chapter_characters`、`dialogues`），同时自动更新全书角色汇总（`book_characters`）。
+- **说明**: 触发 AI 大模型，对指定章节进行角色提取和对话抽离。分析结果写入结构化表（`chapter_characters`、`dialogues`），同时自动更新全书角色汇总（`book_characters`）。
 - **响应**:
   ```json
   {

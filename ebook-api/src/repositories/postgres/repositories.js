@@ -987,6 +987,145 @@ class StorageObjectRepository {
   }
 }
 
+class SystemSettingRepository {
+  async upsert(key, value) {
+    const row = await db.one(`
+      INSERT INTO system_settings (key, value, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+      RETURNING key
+    `, [key, value]);
+    return row.key;
+  }
+
+  async findByKey(key) {
+    return db.one('SELECT * FROM system_settings WHERE key = $1', [key]);
+  }
+
+  async getValue(key, defaultValue = null) {
+    const row = await this.findByKey(key);
+    return row ? row.value : defaultValue;
+  }
+
+  async findAll() {
+    return db.many('SELECT * FROM system_settings ORDER BY key ASC');
+  }
+
+  async delete(key) {
+    const result = await db.query('DELETE FROM system_settings WHERE key = $1', [key]);
+    return result.rowCount > 0;
+  }
+}
+
+class AiConfigRepository {
+  async create(config) {
+    const row = await db.one(`
+      INSERT INTO ai_configs (name, api_url, api_key, model, is_reasoning, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id
+    `, [
+      config.name,
+      config.api_url,
+      config.api_key,
+      config.model,
+      config.is_reasoning ?? false,
+      config.is_active ?? false
+    ]);
+    return row.id;
+  }
+
+  async update(id, updates) {
+    const allowed = ['name', 'api_url', 'api_key', 'model', 'is_reasoning', 'is_active'];
+    const { fields, values } = buildUpdate(updates, allowed);
+    if (fields.length === 0) return false;
+    fields.push('updated_at = NOW()');
+    values.push(id);
+    const result = await db.query(`UPDATE ai_configs SET ${fields.join(', ')} WHERE id = $${values.length}`, values);
+    return result.rowCount > 0;
+  }
+
+  async findById(id) {
+    return db.one('SELECT * FROM ai_configs WHERE id = $1', [id]);
+  }
+
+  async findActive() {
+    return db.one('SELECT * FROM ai_configs WHERE is_active = TRUE LIMIT 1');
+  }
+
+  async findAll() {
+    return db.many('SELECT * FROM ai_configs ORDER BY is_active DESC, updated_at DESC, id DESC');
+  }
+
+  async delete(id) {
+    const result = await db.query('DELETE FROM ai_configs WHERE id = $1', [id]);
+    return result.rowCount > 0;
+  }
+
+  async setActive(id) {
+    await db.transaction(async (tx) => {
+      await tx.query('UPDATE ai_configs SET is_active = FALSE');
+      await tx.query('UPDATE ai_configs SET is_active = TRUE WHERE id = $1', [id]);
+    });
+    return true;
+  }
+}
+
+class TtsConfigRepository {
+  async create(config) {
+    const row = await db.one(`
+      INSERT INTO tts_configs (name, provider, api_url, api_key, is_active)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id
+    `, [
+      config.name,
+      config.provider,
+      config.api_url || null,
+      config.api_key || null,
+      config.is_active ?? false
+    ]);
+    return row.id;
+  }
+
+  async update(id, updates) {
+    const allowed = ['name', 'provider', 'api_url', 'api_key', 'is_active'];
+    const { fields, values } = buildUpdate(updates, allowed);
+    if (fields.length === 0) return false;
+    fields.push('updated_at = NOW()');
+    values.push(id);
+    const result = await db.query(`UPDATE tts_configs SET ${fields.join(', ')} WHERE id = $${values.length}`, values);
+    return result.rowCount > 0;
+  }
+
+  async findById(id) {
+    return db.one('SELECT * FROM tts_configs WHERE id = $1', [id]);
+  }
+
+  async findActiveByProvider(provider) {
+    return db.one('SELECT * FROM tts_configs WHERE provider = $1 AND is_active = TRUE LIMIT 1', [provider]);
+  }
+
+  async findAll() {
+    return db.many('SELECT * FROM tts_configs ORDER BY provider ASC, is_active DESC, updated_at DESC, id DESC');
+  }
+
+  async findByProvider(provider) {
+    return db.many('SELECT * FROM tts_configs WHERE provider = $1 ORDER BY is_active DESC, updated_at DESC, id DESC', [provider]);
+  }
+
+  async delete(id) {
+    const result = await db.query('DELETE FROM tts_configs WHERE id = $1', [id]);
+    return result.rowCount > 0;
+  }
+
+  async setActive(id, provider) {
+    await db.transaction(async (tx) => {
+      await tx.query('UPDATE tts_configs SET is_active = FALSE WHERE provider = $1', [provider]);
+      await tx.query('UPDATE tts_configs SET is_active = TRUE WHERE id = $1', [id]);
+    });
+    return true;
+  }
+}
+
 module.exports = {
   BookCharacterRepository,
   BookRepository,
@@ -1002,5 +1141,8 @@ module.exports = {
   StorageObjectRepository,
   VoiceFavoriteRepository,
   VoiceProfileRepository,
+  SystemSettingRepository,
+  AiConfigRepository,
+  TtsConfigRepository,
   buildFavoriteKey
 };

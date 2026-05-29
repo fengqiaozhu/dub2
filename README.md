@@ -16,7 +16,7 @@ dub is an ebook dubbing workspace. It combines a Vue workspace with an Express A
 - npm
 - PostgreSQL 16+
 - S3-compatible storage such as MinIO, AWS S3, R2, or OSS
-- Mosi/Fish/DeepSeek credentials for provider features
+- Mosi/Fish/OpenAI/DeepSeek credentials for provider features
 
 ## Environment
 

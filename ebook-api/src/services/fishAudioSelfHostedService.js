@@ -131,9 +131,18 @@ class FishAudioSelfHostedService {
     this.baseUrl = normalizeBaseUrl(process.env.FISH_SELF_HOSTED_BASE_URL);
   }
 
-  getBaseUrl() {
-    this.baseUrl = normalizeBaseUrl(process.env.FISH_SELF_HOSTED_BASE_URL || this.baseUrl);
-    return this.baseUrl;
+  async getBaseUrl() {
+    try {
+      const { ttsConfigRepository } = getRepositories();
+      const activeDbConfig = await ttsConfigRepository.findActiveByProvider('fish_audio_self_hosted');
+      if (activeDbConfig && activeDbConfig.api_url) {
+        return normalizeBaseUrl(activeDbConfig.api_url);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch active Fish Audio self-hosted config from tts_configs:', err.message);
+    }
+
+    return normalizeBaseUrl(process.env.FISH_SELF_HOSTED_BASE_URL || this.baseUrl);
   }
 
   getTimeoutMs(options = {}) {
@@ -142,9 +151,10 @@ class FishAudioSelfHostedService {
   }
 
   async getStatus() {
-    const configured = Boolean(process.env.FISH_SELF_HOSTED_BASE_URL);
+    const baseUrl = await this.getBaseUrl();
+    const configured = Boolean(baseUrl && baseUrl !== normalizeBaseUrl(''));
     try {
-      const response = await axios.get(`${this.getBaseUrl()}/v1/references/list`, {
+      const response = await axios.get(`${baseUrl}/v1/references/list`, {
         timeout: 10000
       });
       return {
@@ -173,7 +183,8 @@ class FishAudioSelfHostedService {
       };
     }
 
-    const response = await axios.get(`${this.getBaseUrl()}/v1/references/list`, {
+    const baseUrl = await this.getBaseUrl();
+    const response = await axios.get(`${baseUrl}/v1/references/list`, {
       timeout: 30000
     });
     const voices = (await Promise.all(normalizeReferenceIds(response.data)
@@ -206,7 +217,8 @@ class FishAudioSelfHostedService {
     form.append('audio', fs.createReadStream(filePath));
     form.append('text', text);
 
-    const response = await axios.post(`${this.getBaseUrl()}/v1/references/add`, form, {
+    const baseUrl = await this.getBaseUrl();
+    const response = await axios.post(`${baseUrl}/v1/references/add`, form, {
       headers: form.getHeaders(),
       timeout: this.getTimeoutMs()
     });
@@ -228,7 +240,8 @@ class FishAudioSelfHostedService {
       throw new Error('voiceId is required');
     }
 
-    const response = await axios.delete(`${this.getBaseUrl()}/v1/references/delete`, {
+    const baseUrl = await this.getBaseUrl();
+    const response = await axios.delete(`${baseUrl}/v1/references/delete`, {
       data: { reference_id: voiceId },
       headers: { 'Content-Type': 'application/json' },
       timeout: this.getTimeoutMs()
@@ -263,7 +276,8 @@ class FishAudioSelfHostedService {
     if (options.repetition_penalty) payload.repetition_penalty = options.repetition_penalty;
     if (options.temperature) payload.temperature = options.temperature;
 
-    const response = await axios.post(`${this.getBaseUrl()}/v1/tts`, payload, {
+    const baseUrl = await this.getBaseUrl();
+    const response = await axios.post(`${baseUrl}/v1/tts`, payload, {
       headers: { 'Content-Type': 'application/json' },
       responseType: 'arraybuffer',
       timeout: this.getTimeoutMs(options)
@@ -292,7 +306,7 @@ class FishAudioSelfHostedService {
         voice_id: voiceId,
         format,
         bytes: buffer.length,
-        base_url: this.getBaseUrl()
+        base_url: baseUrl
       }
     };
   }

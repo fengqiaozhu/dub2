@@ -44,9 +44,9 @@ services:
       S3_ACCESS_KEY_ID: ebook
       S3_SECRET_ACCESS_KEY: ebook-secret
       S3_FORCE_PATH_STYLE: "true"
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_API_URL: ${DEEPSEEK_API_URL:-https://api.deepseek.com}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-pro}
+      OPEN_AI_API_KEY: ${OPEN_AI_API_KEY:-}
+      OPEN_AI_API_URL: ${OPEN_AI_API_URL:-https://api.deepseek.com}
+      OPEN_AI_MODEL: ${OPEN_AI_MODEL:-deepseek-v4-pro}
       MOSI_API_KEY: ${MOSI_API_KEY:-}
       MOSI_BASE_URL: ${MOSI_BASE_URL:-https://studio.mosi.cn}
       FISH_API_KEY: ${FISH_API_KEY:-}

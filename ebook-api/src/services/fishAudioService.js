@@ -43,15 +43,32 @@ function isRetryableBackendError(error) {
 class FishAudioService {
   constructor() {
     this.client = null;
+    this._cachedKey = null;
+  }
+
+  async getApiKey() {
+    try {
+      const { ttsConfigRepository } = require('../repositories');
+      const activeDbConfig = await ttsConfigRepository.findActiveByProvider('fish_audio');
+      if (activeDbConfig && activeDbConfig.api_key) {
+        return activeDbConfig.api_key;
+      }
+    } catch (err) {
+      console.warn('Failed to fetch active Fish Audio config from tts_configs:', err.message);
+    }
+
+    return process.env.FISH_API_KEY;
   }
 
   async getClient() {
-    if (!process.env.FISH_API_KEY) {
+    const apiKey = await this.getApiKey();
+    if (!apiKey) {
       throw new Error('FISH_API_KEY is not configured');
     }
-    if (!this.client) {
+    if (!this.client || this._cachedKey !== apiKey) {
       const { FishAudioClient } = await import('fish-audio');
-      this.client = new FishAudioClient({ apiKey: process.env.FISH_API_KEY });
+      this.client = new FishAudioClient({ apiKey });
+      this._cachedKey = apiKey;
     }
     return this.client;
   }
@@ -85,7 +102,8 @@ class FishAudioService {
   }
 
   async getApiCredit({ checkFreeCredit = true, teamId } = {}) {
-    if (!process.env.FISH_API_KEY) {
+    const apiKey = await this.getApiKey();
+    if (!apiKey) {
       return {
         configured: false,
         available: false,
@@ -104,7 +122,7 @@ class FishAudioService {
       const response = await axios.get(`https://api.fish.audio/wallet/self/api-credit?${params.toString()}`, {
         timeout: 15000,
         headers: {
-          Authorization: `Bearer ${process.env.FISH_API_KEY}`
+          Authorization: `Bearer ${apiKey}`
         }
       });
       const credit = Number(response.data?.credit || 0);

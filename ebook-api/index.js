@@ -13,6 +13,8 @@ const ttsRoutes = require('./src/routes/tts');
 const jobRoutes = require('./src/routes/jobs');
 const mediaRoutes = require('./src/routes/media');
 const healthRoutes = require('./src/routes/health');
+const settingRoutes = require('./src/routes/settings');
+const chatRoutes = require('./src/routes/chat');
 const jobManager = require('./src/services/jobManager');
 const path = require('path');
 
@@ -33,6 +35,8 @@ app.use('/api/annotations', annotationRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/mosi', mosiRoutes);
 app.use('/api/jobs', jobRoutes);
+app.use('/api/settings', settingRoutes);
+app.use('/api/chat', chatRoutes);
 
 
 (async () => {
