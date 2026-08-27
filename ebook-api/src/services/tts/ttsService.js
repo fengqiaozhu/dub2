@@ -40,7 +40,8 @@ class TtsService {
           synthesis_available: status.available,
           reason: status.reason,
           configured: status.configured,
-          status: status.status
+          status: status.status,
+          billing: status.billing || null
         };
       }
 
@@ -59,6 +60,15 @@ class TtsService {
         synthesis_available: credit.available,
         reason: credit.reason,
         credit: credit.credit,
+        package: credit.package,
+        recommended_model: credit.recommended_model,
+        billing: {
+          source: 'official_api',
+          balance_available: true,
+          balance_status: credit.available ? 'available' : 'insufficient',
+          credit: credit.credit,
+          package: credit.package
+        },
         configured: credit.configured,
         status: credit.status
       };
@@ -187,6 +197,7 @@ class TtsService {
 
   async synthesize(params = {}) {
     const providerId = params.provider || 'mosi';
+    let requestParams = params;
     if (providerId === 'fish_audio') {
       const fishAudioService = require('../fishAudioService');
       const credit = await fishAudioService.getApiCredit();
@@ -197,18 +208,22 @@ class TtsService {
         error.credit = credit.credit;
         throw error;
       }
+      requestParams = {
+        ...params,
+        model: params.model || await fishAudioService.getConfiguredModel({ accountStatus: credit })
+      };
     }
 
     const provider = this.getProvider(providerId);
-    const intent = normalizeIntent(params);
-    const plan = planForProvider(provider, { ...params, intent });
+    const intent = normalizeIntent(requestParams);
+    const plan = planForProvider(provider, { ...requestParams, intent });
     const result = await provider.synthesize({
-      text: params.text,
-      voiceId: params.voiceId || params.voice_id,
+      text: requestParams.text,
+      voiceId: requestParams.voiceId || requestParams.voice_id,
       model: plan.model,
       options: {
         ...plan.providerOptions,
-        storage: params.options?.storage
+        storage: requestParams.options?.storage
       }
     });
 

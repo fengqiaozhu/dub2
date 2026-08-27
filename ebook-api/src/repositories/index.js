@@ -14,6 +14,7 @@ const {
   VoiceFavoriteRepository,
   VoiceProfileRepository,
   SystemSettingRepository,
+  ProviderUsageRepository,
   AiConfigRepository,
   TtsConfigRepository
 } = require('./postgres/repositories');
@@ -34,6 +35,7 @@ module.exports = {
   jobRepository: new JobRepository(),
   storageObjectRepository: new StorageObjectRepository(),
   systemSettingRepository: new SystemSettingRepository(),
+  providerUsageRepository: new ProviderUsageRepository(),
   aiConfigRepository: new AiConfigRepository(),
   ttsConfigRepository: new TtsConfigRepository(),
 };

@@ -5,6 +5,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const storageService = require('./storage/storageService');
 const { mediaUrlForKey } = require('./storage/keyBuilder');
+const { extractMosiErrorCode, summarizeMosiBilling } = require('./mosiAccount');
 
 class MosiService {
   constructor() {
@@ -56,6 +57,53 @@ class MosiService {
     }
     
     return headers;
+  }
+
+  async getStatus() {
+    const apiKey = await this.getApiKey();
+    let usage = null;
+    try {
+      const { providerUsageRepository } = require('../repositories');
+      usage = await providerUsageRepository.findByProvider('mosi');
+    } catch (error) {
+      console.warn('Failed to load Mosi usage summary:', error.message);
+    }
+
+    const configured = Boolean(apiKey);
+    return {
+      configured,
+      available: configured,
+      reason: configured ? null : 'MOSI_API_KEY is not configured',
+      status: configured ? 'ready' : 'unconfigured',
+      billing: summarizeMosiBilling(usage)
+    };
+  }
+
+  async recordUsage(creditCost) {
+    try {
+      const { providerUsageRepository } = require('../repositories');
+      return await providerUsageRepository.recordSuccess('mosi', creditCost);
+    } catch (error) {
+      console.warn('Failed to record Mosi usage:', error.message);
+      return null;
+    }
+  }
+
+  async recordError(error) {
+    const data = error?.response?.data;
+    const code = extractMosiErrorCode(data);
+    if (!code) return null;
+    try {
+      const { providerUsageRepository } = require('../repositories');
+      return await providerUsageRepository.recordError(
+        'mosi',
+        code,
+        data?.message || data?.error?.message || error.message
+      );
+    } catch (trackingError) {
+      console.warn('Failed to record Mosi error:', trackingError.message);
+      return null;
+    }
   }
 
   /**
@@ -247,6 +295,9 @@ class MosiService {
         timeout: 600000 // 10 mins as per docs (600s)
       });
 
+      const creditCost = response.data.usage?.credit_cost ?? response.data.meta_info?.cost ?? null;
+      await this.recordUsage(creditCost);
+
       const audioDataB64 = response.data.audio_data;
       if (!audioDataB64) {
         throw new Error('No audio data returned from Mosi');
@@ -272,8 +323,13 @@ class MosiService {
       };
 
     } catch (error) {
+      await this.recordError(error);
       console.error('Mosi API synthesize error:', error.response?.data || error.message);
-      throw new Error(`Synthesize failed: ${JSON.stringify(error.response?.data || error.message)}`);
+      const wrappedError = new Error(`Synthesize failed: ${JSON.stringify(error.response?.data || error.message)}`);
+      wrappedError.statusCode = error.response?.status;
+      wrappedError.code = extractMosiErrorCode(error.response?.data) || error.code;
+      wrappedError.provider = 'mosi';
+      throw wrappedError;
     }
   }
 }

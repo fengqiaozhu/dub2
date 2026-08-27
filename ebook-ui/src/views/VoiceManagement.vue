@@ -68,6 +68,30 @@ interface ProviderStatus {
   provider: string;
   synthesis_available: boolean;
   reason?: string | null;
+  configured?: boolean;
+  credit?: number | null;
+  package?: {
+    type?: string | null;
+    total?: number | null;
+    balance?: number | null;
+    extra_balance?: number | null;
+  } | null;
+  recommended_model?: string | null;
+  billing?: {
+    source?: 'official_api' | 'local_usage' | string;
+    balance_available?: boolean;
+    balance_status?: 'available' | 'insufficient' | 'unknown' | string;
+    note?: string | null;
+    credit?: number | null;
+    package?: ProviderStatus['package'];
+    request_count?: number;
+    total_credit_cost?: number;
+    last_credit_cost?: number | null;
+    last_used_at?: string | null;
+    last_error_code?: string | null;
+    last_error_message?: string | null;
+    last_error_at?: string | null;
+  } | null;
 }
 
 interface PageState {
@@ -106,6 +130,7 @@ const platformVoices = ref<ProviderVoice[]>([]);
 const favorites = ref<VoiceFavorite[]>([]);
 const cloneJobs = ref<Job[]>([]);
 const loading = ref(false);
+const balanceLoading = ref(false);
 const loadingMoreProfiles = ref(false);
 const loadingMoreProviderVoices = ref(false);
 const detailItem = ref<DetailItem>(null);
@@ -292,6 +317,14 @@ const isFavoriteKey = (key: string) => favoriteKeys.value.has(key);
 const providerStatusFor = (provider: string) => providerStatuses.value[provider];
 const isProviderSynthAvailable = (provider: string) => providerStatusFor(provider)?.synthesis_available !== false;
 const providerUnavailableReason = (provider: string) => providerStatusFor(provider)?.reason || '该平台当前不可配音';
+const hasProviderAccountWarning = (provider: string) => (
+  providerStatusFor(provider)?.billing?.balance_status === 'insufficient'
+);
+const providerStatusLabel = (provider: string) => {
+  if (!isProviderSynthAvailable(provider)) return '不可配音';
+  if (hasProviderAccountWarning(provider)) return '余额不足 · 可重试';
+  return '可配音';
+};
 const isProfileSelected = (profile: VoiceProfile) => selectedProfileIds.value.has(profile.id);
 const isProfileCloning = (profile: VoiceProfile) => cloningProfileIds.value.has(profile.id);
 const selectableFilteredProfiles = computed(() => filteredProfiles.value.filter((profile) => Boolean(profile.sample_audio_url)));
@@ -309,6 +342,42 @@ const formatDate = (value?: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+const formatCredit = (value?: number | string | null) => {
+  if (value === null || value === undefined || value === '') return '—';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6 }).format(number);
+};
+
+const formatUsageTime = (value?: string | null) => {
+  if (!value) return '暂无记录';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+};
+
+const fishPackageFor = (provider: string) => {
+  const status = providerStatusFor(provider);
+  return status?.billing?.package || status?.package || null;
+};
+
+const fishCreditFor = (provider: string) => {
+  const status = providerStatusFor(provider);
+  return status?.billing?.credit ?? status?.credit ?? null;
+};
+
+const providerAccountTitle = (provider: string) => {
+  const status = providerStatusFor(provider);
+  if (provider === 'fish_audio') {
+    return status?.billing?.balance_available
+      ? '余额来自 Fish Audio 官方账户接口'
+      : status?.reason || '尚未取得 Fish Audio 余额';
+  }
+  if (provider === 'mosi') {
+    return status?.billing?.note || 'Mosi 官方未公开账户余额查询接口';
+  }
+  return status?.reason || '该平台暂无余额信息';
 };
 
 const mapLiveVoice = (voice: any, kind: 'system' | 'clone'): ProviderVoice => ({
@@ -340,6 +409,21 @@ const fetchProviders = async () => {
   ]);
   providers.value = res.data || [];
   providerStatuses.value = Object.fromEntries((statusRes.data || []).map((status: ProviderStatus) => [status.provider, status]));
+};
+
+const refreshBalances = async () => {
+  if (balanceLoading.value) return;
+  balanceLoading.value = true;
+  try {
+    const response: any = await request.get('/tts/providers/status');
+    providerStatuses.value = Object.fromEntries(
+      (response.data || []).map((status: ProviderStatus) => [status.provider, status])
+    );
+  } catch (error) {
+    console.error('Failed to refresh provider balances:', error);
+  } finally {
+    balanceLoading.value = false;
+  }
 };
 
 const fetchVoiceProfiles = async () => {
@@ -819,7 +903,9 @@ onBeforeUnmount(() => {
         <span class="console-subtitle mono-text">{{ providerSummary }}</span>
       </div>
       <div class="header-actions">
-        <button class="icon-btn" title="刷新" :disabled="loading" @click="refreshAll">刷新</button>
+        <button class="icon-btn" title="刷新平台账户状态与余额" :disabled="loading || balanceLoading" @click="refreshBalances">
+          {{ balanceLoading ? '刷新中…' : '刷新余额' }}
+        </button>
         <button class="btn btn-outline" disabled title="录制功能待接入">录制样本</button>
         <button class="btn btn-primary" @click="openUpload">上传样本</button>
       </div>
@@ -837,11 +923,47 @@ onBeforeUnmount(() => {
         <span class="provider-meta mono-text">{{ provider.defaultModel }}</span>
         <span
           class="provider-status"
-          :class="{ unavailable: !isProviderSynthAvailable(provider.provider) }"
-          :title="providerUnavailableReason(provider.provider)"
+          :class="{
+            unavailable: !isProviderSynthAvailable(provider.provider),
+            'account-warning': hasProviderAccountWarning(provider.provider),
+          }"
+          :title="hasProviderAccountWarning(provider.provider)
+            ? providerAccountTitle(provider.provider)
+            : isProviderSynthAvailable(provider.provider)
+              ? '平台已配置，可用于配音'
+              : providerUnavailableReason(provider.provider)"
         >
-          {{ isProviderSynthAvailable(provider.provider) ? '可配音' : '不可配音' }}
+          {{ providerStatusLabel(provider.provider) }}
         </span>
+        <div
+          v-if="provider.provider === 'fish_audio'"
+          class="provider-account"
+          :title="providerAccountTitle(provider.provider)"
+        >
+          <span><b>付费余额</b>{{ formatCredit(fishCreditFor(provider.provider)) }}</span>
+          <span>
+            <b>{{ fishPackageFor(provider.provider)?.type === 'free' ? '免费套餐' : '套餐余额' }}</b>
+            {{ formatCredit(fishPackageFor(provider.provider)?.balance) }}/{{ formatCredit(fishPackageFor(provider.provider)?.total) }}
+          </span>
+          <span v-if="Number(fishPackageFor(provider.provider)?.extra_balance || 0) > 0">
+            <b>额外额度</b>{{ formatCredit(fishPackageFor(provider.provider)?.extra_balance) }}
+          </span>
+          <span><b>额度建议</b>{{ providerStatusFor(provider.provider)?.recommended_model || '—' }}</span>
+        </div>
+        <div
+          v-else-if="provider.provider === 'mosi'"
+          class="provider-account"
+          :class="{ warning: providerStatusFor(provider.provider)?.billing?.balance_status === 'insufficient' }"
+          :title="providerAccountTitle(provider.provider)"
+        >
+          <span class="provider-balance-note">
+            <b>账户余额</b>
+            {{ providerStatusFor(provider.provider)?.billing?.balance_status === 'insufficient' ? '上次请求余额不足' : '官方未开放查询' }}
+          </span>
+          <span><b>本项目累计</b>{{ formatCredit(providerStatusFor(provider.provider)?.billing?.total_credit_cost) }} credits</span>
+          <span><b>最近一次</b>{{ formatCredit(providerStatusFor(provider.provider)?.billing?.last_credit_cost) }} credits</span>
+          <span class="provider-usage-time"><b>最近计费</b>{{ formatUsageTime(providerStatusFor(provider.provider)?.billing?.last_used_at) }}</span>
+        </div>
       </button>
       <div v-if="providers.length === 0" class="provider-empty mono-text">暂无可用 Provider</div>
     </div>
@@ -1375,6 +1497,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   transition: all 0.18s;
 }
 
@@ -1409,6 +1532,7 @@ onBeforeUnmount(() => {
 
 .provider-strip {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 10px;
   min-height: 64px;
@@ -1418,7 +1542,8 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: auto auto;
   gap: 3px 12px;
-  min-width: 180px;
+  min-width: 270px;
+  flex: 1 1 300px;
   padding: 10px 12px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -1441,14 +1566,53 @@ onBeforeUnmount(() => {
 
 .provider-status {
   grid-column: 2;
-  grid-row: 1 / span 2;
+  grid-row: 1;
   align-self: center;
+  justify-self: end;
   color: var(--accent-cyan);
   font-size: 11px;
 }
 
 .provider-status.unavailable {
   color: #f87171;
+}
+
+.provider-status.account-warning {
+  color: var(--warning-amber);
+}
+
+.provider-account {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.provider-account span {
+  display: inline-flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.provider-account b {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.provider-account.warning,
+.provider-account.warning b {
+  color: #f87171;
+}
+
+.provider-balance-note,
+.provider-usage-time {
+  flex-basis: 100%;
 }
 
 .provider-empty {

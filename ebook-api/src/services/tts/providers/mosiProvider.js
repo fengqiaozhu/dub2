@@ -78,6 +78,10 @@ class MosiProvider {
     };
   }
 
+  async getStatus() {
+    return mosiService.getStatus();
+  }
+
   async listVoices({ kind = 'all', limit = 50, offset = 0, status } = {}) {
     if (kind === 'system') {
       const result = await mosiService.getSystemVoices(limit, offset);

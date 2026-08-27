@@ -10,7 +10,7 @@
     "restore": "node scripts/restore.js",
     "doctor": "node scripts/doctor.js",
     "check": "find src -name '*.js' -print0 | xargs -0 -n1 node --check && find scripts -name '*.js' -print0 | xargs -0 -n1 node --check",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/*.test.js"
   },
   "keywords": [],
   "author": "",

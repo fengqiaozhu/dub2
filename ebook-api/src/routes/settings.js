@@ -16,6 +16,7 @@ router.post('/ai/:id/active', settingController.setActiveAiConfig);
 
 // TTS configs routes
 router.get('/tts', settingController.getTtsConfigs);
+router.get('/tts/fish-audio/models', settingController.getFishAudioModels);
 router.post('/tts', settingController.createTtsConfig);
 router.put('/tts/:id', settingController.updateTtsConfig);
 router.delete('/tts/:id', settingController.deleteTtsConfig);

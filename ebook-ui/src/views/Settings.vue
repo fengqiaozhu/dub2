@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import request from '@/api/request';
 
 interface AiConfig {
@@ -18,7 +18,17 @@ interface TtsConfig {
   provider: 'mosi' | 'fish_audio' | 'fish_audio_self_hosted';
   api_url: string;
   api_key: string;
+  model: string;
   is_active: boolean;
+}
+
+interface FishModelCatalog {
+  models: string[];
+  defaultModel?: string;
+  freeDefaultModel?: string | null;
+  recommendedModel?: string;
+  source?: string;
+  warning?: string;
 }
 
 const activeTab = ref<'ai' | 'tts'>('ai');
@@ -48,9 +58,13 @@ const ttsForm = ref<TtsConfig>({
   provider: 'mosi',
   api_url: '',
   api_key: '',
+  model: '',
   is_active: false
 });
 const isSavingTts = ref(false);
+const fishModelOptions = ref<string[]>(['s2.1-pro', 's2.1-pro-free', 's2-pro', 's1']);
+const fishModelSource = ref('内置建议');
+const isLoadingFishModels = ref(false);
 
 // System Settings State omitted
 
@@ -86,6 +100,35 @@ const fetchTtsConfigs = async () => {
     showToast(error.message || '获取 TTS 配置失败', 'error');
   } finally {
     loadingTts.value = false;
+  }
+};
+
+const fetchFishModels = async (refresh = false) => {
+  if (isLoadingFishModels.value) return;
+  isLoadingFishModels.value = true;
+  try {
+    const res: any = await request.get('/settings/tts/fish-audio/models', {
+      params: refresh ? { refresh: 'true' } : undefined,
+    });
+    const catalog: FishModelCatalog = res.data || {};
+    if (Array.isArray(catalog.models) && catalog.models.length > 0) {
+      fishModelOptions.value = catalog.models;
+    }
+    fishModelSource.value = catalog.source === 'fish_openapi'
+      ? 'Fish 官方 OpenAPI'
+      : catalog.source === 'stale_cache'
+        ? '官方列表缓存'
+        : '内置建议';
+    if (ttsForm.value.provider === 'fish_audio' && !ttsForm.value.model.trim()) {
+      ttsForm.value.model = catalog.recommendedModel || catalog.defaultModel || fishModelOptions.value[0] || '';
+    }
+    if (refresh) {
+      showToast(catalog.warning ? `已使用${fishModelSource.value}：${catalog.warning}` : 'Fish 模型建议已刷新');
+    }
+  } catch (error: any) {
+    if (refresh) showToast(error.message || '刷新 Fish 模型建议失败', 'error');
+  } finally {
+    isLoadingFishModels.value = false;
   }
 };
 
@@ -170,6 +213,7 @@ const openAddTtsModal = () => {
     provider: 'mosi',
     api_url: '',
     api_key: '',
+    model: '',
     is_active: false
   };
   showTtsModal.value = true;
@@ -177,8 +221,9 @@ const openAddTtsModal = () => {
 
 const openEditTtsModal = (config: TtsConfig) => {
   editingTtsConfig.value = config;
-  ttsForm.value = { ...config };
+  ttsForm.value = { ...config, model: config.model || '' };
   showTtsModal.value = true;
+  if (config.provider === 'fish_audio') void fetchFishModels();
 };
 
 const closeTtsModal = () => {
@@ -190,6 +235,10 @@ const closeTtsModal = () => {
 const saveTtsConfig = async () => {
   if (!ttsForm.value.name.trim() || !ttsForm.value.provider) {
     showToast('配置展示名称与服务商为必填项', 'error');
+    return;
+  }
+  if (ttsForm.value.provider === 'fish_audio' && !ttsForm.value.model.trim()) {
+    showToast('Fish Audio 模型为必填项', 'error');
     return;
   }
 
@@ -210,6 +259,17 @@ const saveTtsConfig = async () => {
     isSavingTts.value = false;
   }
 };
+
+watch(
+  () => ttsForm.value.provider,
+  (provider) => {
+    if (provider === 'fish_audio') {
+      void fetchFishModels();
+      return;
+    }
+    ttsForm.value.model = '';
+  }
+);
 
 const deleteTtsConfig = async (id: number) => {
   if (!confirm('确定要永久删除此条 TTS 配置吗？')) return;
@@ -447,6 +507,10 @@ onMounted(() => {
                 <span class="label">API KEY:</span>
                 <span class="value select-text">••••••••••••••••</span>
               </div>
+              <div class="detail-row" v-if="config.model">
+                <span class="label">模型:</span>
+                <span class="value select-text mono-text">{{ config.model }}</span>
+              </div>
             </div>
 
             <div class="ai-card-actions">
@@ -583,6 +647,34 @@ onMounted(() => {
           <span>API 密钥 (API Key) <em>*</em></span>
           <input v-model="ttsForm.api_key" type="password" placeholder="输入 API KEY" required>
         </label>
+
+        <div class="field" v-if="ttsForm.provider === 'fish_audio'">
+          <div class="field-title-row">
+            <span>模型名称 (Model) <em>*</em></span>
+            <button
+              type="button"
+              class="inline-action"
+              :disabled="isLoadingFishModels"
+              @click="fetchFishModels(true)"
+            >
+              {{ isLoadingFishModels ? '刷新中...' : '刷新官方建议' }}
+            </button>
+          </div>
+          <input
+            v-model="ttsForm.model"
+            type="text"
+            list="fish-model-options"
+            placeholder="例如: s2.1-pro-free；也可手动输入未来模型"
+            autocomplete="off"
+            required
+          >
+          <datalist id="fish-model-options">
+            <option v-for="model in fishModelOptions" :key="model" :value="model" />
+          </datalist>
+          <span class="field-hint">
+            建议来源：{{ fishModelSource }}。下拉项仅作建议，手动输入的模型会原样传给 Fish，不会回退到旧模型。
+          </span>
+        </div>
 
         <div class="switch-field">
           <div class="switch-info">
@@ -937,6 +1029,31 @@ onMounted(() => {
   flex-direction: column;
   gap: 6px;
   margin-bottom: var(--space-2);
+}
+
+.field-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inline-action {
+  border: 0;
+  background: transparent;
+  color: var(--accent-cyan);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inline-action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.inline-action:disabled {
+  color: var(--text-muted);
+  cursor: wait;
 }
 
 .field span {

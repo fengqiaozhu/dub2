@@ -1,6 +1,30 @@
 const fishAudioService = require('../../fishAudioService');
 const { extractMarker } = require('../voiceProfileIdentity');
 
+const commonCapabilities = {
+  cloneVoice: true,
+  systemVoices: true,
+  emotionControl: 'prompt',
+  speedControl: true,
+  pitchControl: false,
+  stylePrompt: true,
+  durationControl: false,
+  ssml: false,
+  streaming: true,
+  outputFormats: ['mp3', 'wav', 'opus', 'pcm']
+};
+
+function modelCapability(id, label) {
+  return {
+    id,
+    label,
+    capabilities: { ...commonCapabilities },
+    limits: {
+      timeoutMs: 240000
+    }
+  };
+}
+
 function proxyMediaUrl(url) {
   if (!url || !String(url).startsWith('http')) return url;
   return `/api/tts/media-proxy?url=${encodeURIComponent(url)}`;
@@ -50,47 +74,13 @@ class FishAudioProvider {
     return {
       provider: this.id,
       displayName: this.displayName,
-      defaultModel: process.env.FISH_DEFAULT_MODEL || 's2-pro',
+      defaultModel: process.env.FISH_DEFAULT_MODEL || 's2.1-pro',
       voiceKinds: ['system', 'clone'],
       models: [
-        {
-          id: 's2-pro',
-          label: 'Fish Audio S2-Pro',
-          capabilities: {
-            cloneVoice: true,
-            systemVoices: true,
-            emotionControl: 'prompt',
-            speedControl: true,
-            pitchControl: false,
-            stylePrompt: true,
-            durationControl: false,
-            ssml: false,
-            streaming: true,
-            outputFormats: ['mp3', 'wav', 'opus', 'pcm']
-          },
-          limits: {
-            timeoutMs: 240000
-          }
-        },
-        {
-          id: 's1',
-          label: 'Fish Audio S1',
-          capabilities: {
-            cloneVoice: true,
-            systemVoices: true,
-            emotionControl: 'prompt',
-            speedControl: true,
-            pitchControl: false,
-            stylePrompt: true,
-            durationControl: false,
-            ssml: false,
-            streaming: true,
-            outputFormats: ['mp3', 'wav', 'opus', 'pcm']
-          },
-          limits: {
-            timeoutMs: 240000
-          }
-        }
+        modelCapability('s2.1-pro', 'Fish Audio S2.1-Pro'),
+        modelCapability('s2.1-pro-free', 'Fish Audio S2.1-Pro Free'),
+        modelCapability('s2-pro', 'Fish Audio S2-Pro'),
+        modelCapability('s1', 'Fish Audio S1')
       ]
     };
   }

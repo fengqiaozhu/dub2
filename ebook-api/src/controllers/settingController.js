@@ -1,4 +1,17 @@
 const { systemSettingRepository, aiConfigRepository, ttsConfigRepository } = require('../repositories');
+const fishAudioCatalogService = require('../services/fishAudioCatalogService');
+const fishAudioService = require('../services/fishAudioService');
+
+function normalizeOptionalModel(model) {
+  if (model === undefined || model === null) return null;
+  const normalized = String(model).trim();
+  if (normalized.length > 100 || /[\r\n\0]/.test(normalized)) {
+    const error = new Error('TTS model must be a single value no longer than 100 characters');
+    error.statusCode = 400;
+    throw error;
+  }
+  return normalized || null;
+}
 
 class SettingController {
   // System settings API
@@ -134,9 +147,29 @@ class SettingController {
     }
   }
 
+  async getFishAudioModels(req, res) {
+    try {
+      const catalog = await fishAudioCatalogService.listModels({
+        refresh: req.query.refresh === 'true'
+      });
+      let recommendedModel = catalog.defaultModel;
+      try {
+        const account = await fishAudioService.getApiCredit();
+        if (account.available && account.recommended_model) {
+          recommendedModel = account.recommended_model;
+        }
+      } catch (error) {
+        // Model discovery should still work when no Fish account is configured.
+      }
+      res.json({ data: { ...catalog, recommendedModel } });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
   async createTtsConfig(req, res) {
     try {
-      const { name, provider, api_url, api_key, is_active } = req.body;
+      const { name, provider, api_url, api_key, model, is_active } = req.body;
       if (!name || !provider) {
         return res.status(400).json({ error: 'Missing required fields: name, provider' });
       }
@@ -146,6 +179,7 @@ class SettingController {
         provider,
         api_url: api_url || null,
         api_key: api_key || null,
+        model: normalizeOptionalModel(model),
         is_active: Boolean(is_active)
       });
 
@@ -155,20 +189,21 @@ class SettingController {
 
       res.status(201).json({ message: 'TTS configuration created successfully', id });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      res.status(error.statusCode || 500).json({ error: error.message });
     }
   }
 
   async updateTtsConfig(req, res) {
     try {
       const id = parseInt(req.params.id, 10);
-      const { name, provider, api_url, api_key, is_active } = req.body;
+      const { name, provider, api_url, api_key, model, is_active } = req.body;
 
       const updates = {};
       if (name !== undefined) updates.name = name;
       if (provider !== undefined) updates.provider = provider;
       if (api_url !== undefined) updates.api_url = api_url;
       if (api_key !== undefined) updates.api_key = api_key;
+      if (model !== undefined) updates.model = normalizeOptionalModel(model);
       if (is_active !== undefined) updates.is_active = Boolean(is_active);
 
       const success = await ttsConfigRepository.update(id, updates);
@@ -183,7 +218,7 @@ class SettingController {
 
       res.json({ message: 'TTS configuration updated successfully' });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      res.status(error.statusCode || 500).json({ error: error.message });
     }
   }
 

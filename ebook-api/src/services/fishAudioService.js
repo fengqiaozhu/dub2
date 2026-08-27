@@ -6,8 +6,9 @@ const axios = require('axios');
 const { appendMarker } = require('./tts/voiceProfileIdentity');
 const storageService = require('./storage/storageService');
 const { mediaUrlForKey } = require('./storage/keyBuilder');
+const { summarizeFishAccount } = require('./fishAudioAccount');
 
-const DEFAULT_MODEL = process.env.FISH_DEFAULT_MODEL || 's2-pro';
+const DEFAULT_MODEL = process.env.FISH_DEFAULT_MODEL || 's2.1-pro';
 const DEFAULT_FORMAT = process.env.FISH_DEFAULT_FORMAT || 'mp3';
 const DEFAULT_TIMEOUT_SECONDS = parseInt(process.env.FISH_TIMEOUT_SECONDS, 10) || 240;
 
@@ -46,18 +47,29 @@ class FishAudioService {
     this._cachedKey = null;
   }
 
-  async getApiKey() {
+  async getActiveConfig() {
     try {
       const { ttsConfigRepository } = require('../repositories');
       const activeDbConfig = await ttsConfigRepository.findActiveByProvider('fish_audio');
-      if (activeDbConfig && activeDbConfig.api_key) {
-        return activeDbConfig.api_key;
-      }
+      if (activeDbConfig) return activeDbConfig;
     } catch (err) {
       console.warn('Failed to fetch active Fish Audio config from tts_configs:', err.message);
     }
 
+    return null;
+  }
+
+  async getApiKey() {
+    const activeDbConfig = await this.getActiveConfig();
+    if (activeDbConfig?.api_key) return activeDbConfig.api_key;
+
     return process.env.FISH_API_KEY;
+  }
+
+  async getConfiguredModel({ accountStatus } = {}) {
+    const activeDbConfig = await this.getActiveConfig();
+    const configuredModel = String(activeDbConfig?.model || process.env.FISH_DEFAULT_MODEL || '').trim();
+    return configuredModel || accountStatus?.recommended_model || DEFAULT_MODEL;
   }
 
   async getClient() {
@@ -111,39 +123,56 @@ class FishAudioService {
       };
     }
 
-    try {
-      const params = new URLSearchParams({
-        check_free_credit: checkFreeCredit ? 'true' : 'false'
-      });
-      if (teamId || process.env.FISH_TEAM_ID) {
-        params.append('team_id', teamId || process.env.FISH_TEAM_ID);
+    const params = new URLSearchParams({
+      check_free_credit: checkFreeCredit ? 'true' : 'false'
+    });
+    if (teamId || process.env.FISH_TEAM_ID) {
+      params.append('team_id', teamId || process.env.FISH_TEAM_ID);
+    }
+
+    const requestOptions = {
+      timeout: 15000,
+      headers: {
+        Authorization: `Bearer ${apiKey}`
       }
+    };
+    const [creditResult, packageResult] = await Promise.allSettled([
+      axios.get(`https://api.fish.audio/wallet/self/api-credit?${params.toString()}`, requestOptions),
+      axios.get('https://api.fish.audio/wallet/self/package', requestOptions)
+    ]);
 
-      const response = await axios.get(`https://api.fish.audio/wallet/self/api-credit?${params.toString()}`, {
-        timeout: 15000,
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        }
-      });
-      const credit = Number(response.data?.credit || 0);
+    const creditData = creditResult.status === 'fulfilled' ? creditResult.value.data : {};
+    const packageData = packageResult.status === 'fulfilled' ? packageResult.value.data : {};
+    const summary = summarizeFishAccount({ creditData, packageData });
+    const failedRequest = creditResult.status === 'rejected'
+      ? creditResult.reason
+      : packageResult.status === 'rejected'
+        ? packageResult.reason
+        : null;
 
+    if (!summary.available && creditResult.status === 'rejected' && packageResult.status === 'rejected') {
+      const status = failedRequest?.response?.status;
+      const message = failedRequest?.response?.data?.message || failedRequest?.message;
       return {
         configured: true,
-        available: credit > 0,
-        credit,
-        raw: response.data,
-        reason: credit > 0 ? null : 'Fish Audio API credit is insufficient'
-      };
-    } catch (error) {
-      const status = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      return {
-        configured: true,
-        available: false,
+        ...summary,
         status,
         reason: status === 401 ? 'Fish Audio API key is unauthorized' : message
       };
     }
+
+    return {
+      configured: true,
+      ...summary,
+      raw: creditData,
+      package_raw: packageData,
+      status: summary.available ? undefined : failedRequest?.response?.status,
+      reason: summary.available
+        ? null
+        : failedRequest?.response?.data?.message
+          || failedRequest?.message
+          || 'Fish Audio API credit and package balance are insufficient'
+    };
   }
 
   async cloneVoice({ filePath, text = '', name, description, marker, onProgress }) {
@@ -168,7 +197,7 @@ class FishAudioService {
     return {
       voice_id: response._id,
       voiceId: response._id,
-      model: DEFAULT_MODEL,
+      model: await this.getConfiguredModel(),
       status: normalizeVoiceState(response.state),
       state: response.state,
       marker,

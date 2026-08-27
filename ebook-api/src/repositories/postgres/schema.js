@@ -203,6 +203,19 @@ CREATE TABLE IF NOT EXISTS system_settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS provider_usage (
+  provider TEXT PRIMARY KEY,
+  request_count BIGINT NOT NULL DEFAULT 0,
+  total_credit_cost NUMERIC NOT NULL DEFAULT 0,
+  last_credit_cost NUMERIC,
+  last_used_at TIMESTAMPTZ,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  last_error_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS ai_configs (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,
@@ -221,10 +234,13 @@ CREATE TABLE IF NOT EXISTS tts_configs (
   provider TEXT NOT NULL,
   api_url TEXT,
   api_key TEXT,
+  model TEXT,
   is_active BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE tts_configs ADD COLUMN IF NOT EXISTS model TEXT;
 `;
 
 async function initSchema() {

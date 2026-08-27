@@ -50,6 +50,7 @@ services:
       MOSI_API_KEY: ${MOSI_API_KEY:-}
       MOSI_BASE_URL: ${MOSI_BASE_URL:-https://studio.mosi.cn}
       FISH_API_KEY: ${FISH_API_KEY:-}
+      FISH_DEFAULT_MODEL: ${FISH_DEFAULT_MODEL:-}
       FISH_SELF_HOSTED_BASE_URL: ${FISH_SELF_HOSTED_BASE_URL:-}
     ports:
       - "13000:13000"

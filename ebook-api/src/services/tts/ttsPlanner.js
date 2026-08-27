@@ -14,8 +14,11 @@ function formatEmotionPrompt(emotion) {
 function planForProvider(provider, request) {
   const capabilities = provider.getCapabilities();
   const modelId = request.model || capabilities.defaultModel;
-  const model = capabilities.models.find((item) => item.id === modelId) || capabilities.models[0];
-  const modelCapabilities = model?.capabilities || {};
+  const declaredModel = capabilities.models.find((item) => item.id === modelId);
+  const capabilityModel = declaredModel
+    || capabilities.models.find((item) => item.id === capabilities.defaultModel)
+    || capabilities.models[0];
+  const modelCapabilities = capabilityModel?.capabilities || {};
   const performance = request.intent?.performance || {};
   const output = request.intent?.output || {};
   const providerOptions = { ...(request.options || {}) };
@@ -76,12 +79,12 @@ function planForProvider(provider, request) {
       report.applied.push('outputFormat');
     } else {
       report.ignored.push('outputFormat');
-      report.warnings.push(`${provider.id} does not support ${output.format} output for ${model.id}`);
+      report.warnings.push(`${provider.id} does not support ${output.format} output for ${modelId}`);
     }
   }
 
   return {
-    model: model?.id || modelId,
+    model: modelId,
     providerOptions,
     appliedControls: report
   };

@@ -1017,6 +1017,70 @@ class SystemSettingRepository {
   }
 }
 
+function normalizeProviderUsage(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    request_count: Number(row.request_count || 0),
+    total_credit_cost: Number(row.total_credit_cost || 0),
+    last_credit_cost: row.last_credit_cost === null || row.last_credit_cost === undefined
+      ? null
+      : Number(row.last_credit_cost)
+  };
+}
+
+class ProviderUsageRepository {
+  async findByProvider(provider) {
+    const row = await db.one('SELECT * FROM provider_usage WHERE provider = $1', [provider]);
+    return normalizeProviderUsage(row);
+  }
+
+  async recordSuccess(provider, creditCost = null) {
+    const normalizedCost = creditCost === null || creditCost === undefined || creditCost === ''
+      ? null
+      : Number(creditCost);
+    const lastCreditCost = normalizedCost !== null && Number.isFinite(normalizedCost)
+      ? normalizedCost
+      : null;
+    const totalIncrement = lastCreditCost ?? 0;
+    const row = await db.one(`
+      INSERT INTO provider_usage (
+        provider, request_count, total_credit_cost, last_credit_cost, last_used_at,
+        last_error_code, last_error_message, last_error_at, updated_at
+      )
+      VALUES ($1, 1, $2, $3, NOW(), NULL, NULL, NULL, NOW())
+      ON CONFLICT (provider) DO UPDATE SET
+        request_count = provider_usage.request_count + 1,
+        total_credit_cost = provider_usage.total_credit_cost + EXCLUDED.total_credit_cost,
+        last_credit_cost = EXCLUDED.last_credit_cost,
+        last_used_at = NOW(),
+        last_error_code = NULL,
+        last_error_message = NULL,
+        last_error_at = NULL,
+        updated_at = NOW()
+      RETURNING *
+    `, [provider, totalIncrement, lastCreditCost]);
+    return normalizeProviderUsage(row);
+  }
+
+  async recordError(provider, code, message) {
+    const row = await db.one(`
+      INSERT INTO provider_usage (
+        provider, request_count, total_credit_cost, last_error_code,
+        last_error_message, last_error_at, updated_at
+      )
+      VALUES ($1, 0, 0, $2, $3, NOW(), NOW())
+      ON CONFLICT (provider) DO UPDATE SET
+        last_error_code = EXCLUDED.last_error_code,
+        last_error_message = EXCLUDED.last_error_message,
+        last_error_at = NOW(),
+        updated_at = NOW()
+      RETURNING *
+    `, [provider, code ? String(code) : null, message || null]);
+    return normalizeProviderUsage(row);
+  }
+}
+
 class AiConfigRepository {
   async create(config) {
     const row = await db.one(`
@@ -1073,21 +1137,22 @@ class AiConfigRepository {
 class TtsConfigRepository {
   async create(config) {
     const row = await db.one(`
-      INSERT INTO tts_configs (name, provider, api_url, api_key, is_active)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO tts_configs (name, provider, api_url, api_key, model, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id
     `, [
       config.name,
       config.provider,
       config.api_url || null,
       config.api_key || null,
+      config.model || null,
       config.is_active ?? false
     ]);
     return row.id;
   }
 
   async update(id, updates) {
-    const allowed = ['name', 'provider', 'api_url', 'api_key', 'is_active'];
+    const allowed = ['name', 'provider', 'api_url', 'api_key', 'model', 'is_active'];
     const { fields, values } = buildUpdate(updates, allowed);
     if (fields.length === 0) return false;
     fields.push('updated_at = NOW()');
@@ -1142,6 +1207,7 @@ module.exports = {
   VoiceFavoriteRepository,
   VoiceProfileRepository,
   SystemSettingRepository,
+  ProviderUsageRepository,
   AiConfigRepository,
   TtsConfigRepository,
   buildFavoriteKey
