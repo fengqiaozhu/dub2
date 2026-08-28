@@ -1136,29 +1136,67 @@ class AiConfigRepository {
 
 class TtsConfigRepository {
   async create(config) {
-    const row = await db.one(`
-      INSERT INTO tts_configs (name, provider, api_url, api_key, model, is_active)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id
-    `, [
-      config.name,
-      config.provider,
-      config.api_url || null,
-      config.api_key || null,
-      config.model || null,
-      config.is_active ?? false
-    ]);
-    return row.id;
+    return db.transaction(async (tx) => {
+      const isActive = Boolean(config.is_active);
+      await tx.query("SELECT pg_advisory_xact_lock(hashtext('tts-config'))");
+      if (isActive) {
+        await tx.query(`
+          UPDATE tts_configs
+          SET is_active = FALSE, updated_at = NOW()
+          WHERE provider = $1 AND is_active = TRUE
+        `, [config.provider]);
+      }
+
+      const row = await tx.one(`
+        INSERT INTO tts_configs (name, provider, api_url, api_key, model, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+      `, [
+        config.name,
+        config.provider,
+        config.api_url || null,
+        config.api_key || null,
+        config.model || null,
+        isActive
+      ]);
+      return row.id;
+    });
   }
 
   async update(id, updates) {
     const allowed = ['name', 'provider', 'api_url', 'api_key', 'model', 'is_active'];
-    const { fields, values } = buildUpdate(updates, allowed);
-    if (fields.length === 0) return false;
-    fields.push('updated_at = NOW()');
-    values.push(id);
-    const result = await db.query(`UPDATE tts_configs SET ${fields.join(', ')} WHERE id = $${values.length}`, values);
-    return result.rowCount > 0;
+    if (!allowed.some((key) => updates[key] !== undefined)) return false;
+
+    return db.transaction(async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock(hashtext('tts-config'))");
+      const current = await tx.one('SELECT * FROM tts_configs WHERE id = $1 FOR UPDATE', [id]);
+      if (!current) return false;
+
+      const targetProvider = updates.provider ?? current.provider;
+      const targetActive = updates.is_active === undefined
+        ? Boolean(current.is_active)
+        : Boolean(updates.is_active);
+      if (targetActive) {
+        await tx.query(`
+          UPDATE tts_configs
+          SET is_active = FALSE, updated_at = NOW()
+          WHERE provider = $1 AND id <> $2 AND is_active = TRUE
+        `, [targetProvider, id]);
+      }
+
+      const normalizedUpdates = {
+        ...updates,
+        is_active: targetActive
+      };
+      const { fields, values } = buildUpdate(normalizedUpdates, allowed);
+      fields.push('updated_at = NOW()');
+      values.push(id);
+      const result = await tx.query(
+        `UPDATE tts_configs SET ${fields.join(', ')} WHERE id = $${values.length}`,
+        values
+      );
+      return result.rowCount > 0;
+    });
   }
 
   async findById(id) {
@@ -1182,12 +1220,24 @@ class TtsConfigRepository {
     return result.rowCount > 0;
   }
 
-  async setActive(id, provider) {
-    await db.transaction(async (tx) => {
-      await tx.query('UPDATE tts_configs SET is_active = FALSE WHERE provider = $1', [provider]);
-      await tx.query('UPDATE tts_configs SET is_active = TRUE WHERE id = $1', [id]);
+  async setActive(id) {
+    return db.transaction(async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock(hashtext('tts-config'))");
+      const config = await tx.one('SELECT * FROM tts_configs WHERE id = $1 FOR UPDATE', [id]);
+      if (!config) return false;
+
+      await tx.query(`
+        UPDATE tts_configs
+        SET is_active = FALSE, updated_at = NOW()
+        WHERE provider = $1 AND id <> $2 AND is_active = TRUE
+      `, [config.provider, id]);
+      await tx.query(`
+        UPDATE tts_configs
+        SET is_active = TRUE, updated_at = NOW()
+        WHERE id = $1
+      `, [id]);
+      return true;
     });
-    return true;
   }
 }
 

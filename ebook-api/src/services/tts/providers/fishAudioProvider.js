@@ -74,7 +74,7 @@ class FishAudioProvider {
     return {
       provider: this.id,
       displayName: this.displayName,
-      defaultModel: process.env.FISH_DEFAULT_MODEL || 's2.1-pro',
+      defaultModel: 's2.1-pro',
       voiceKinds: ['system', 'clone'],
       models: [
         modelCapability('s2.1-pro', 'Fish Audio S2.1-Pro'),

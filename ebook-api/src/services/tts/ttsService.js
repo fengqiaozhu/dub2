@@ -1,4 +1,5 @@
 const providerRegistry = require('./providerRegistry');
+const providerConfigService = require('./providerConfigService');
 const { normalizeIntent } = require('./ttsIntent');
 const { planForProvider } = require('./ttsPlanner');
 const {
@@ -25,8 +26,10 @@ function matchesStatus(voice, status) {
 }
 
 class TtsService {
-  getProviders() {
-    return providerRegistry.list();
+  async getProviders() {
+    const providers = providerRegistry.list();
+    const statuses = await this.getProviderStatuses();
+    return providerConfigService.buildProviderGroups(providers, statuses);
   }
 
   async getProviderStatuses() {
@@ -197,7 +200,16 @@ class TtsService {
 
   async synthesize(params = {}) {
     const providerId = params.provider || 'mosi';
-    let requestParams = params;
+    const activeConfig = await providerConfigService.resolveProviderConfig(providerId);
+    if (!activeConfig) {
+      const error = new Error(`${providerId} has no active TTS configuration`);
+      error.statusCode = 503;
+      error.provider = providerId;
+      throw error;
+    }
+
+    let effectiveModel = String(activeConfig.model || '').trim() || params.model;
+    let requestParams = { ...params, model: effectiveModel };
     if (providerId === 'fish_audio') {
       const fishAudioService = require('../fishAudioService');
       const credit = await fishAudioService.getApiCredit();
@@ -210,8 +222,9 @@ class TtsService {
       }
       requestParams = {
         ...params,
-        model: params.model || await fishAudioService.getConfiguredModel({ accountStatus: credit })
+        model: await fishAudioService.getConfiguredModel({ accountStatus: credit })
       };
+      effectiveModel = requestParams.model;
     }
 
     const provider = this.getProvider(providerId);
@@ -231,6 +244,12 @@ class TtsService {
       ...result,
       provider: providerId,
       model: plan.model,
+      provider_config: {
+        id: activeConfig.id === undefined || activeConfig.id === null ? null : Number(activeConfig.id),
+        name: activeConfig.name,
+        source: activeConfig.source || 'database',
+        model: effectiveModel || plan.model
+      },
       applied_controls: plan.appliedControls
     };
   }

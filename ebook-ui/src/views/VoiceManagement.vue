@@ -20,6 +20,23 @@ interface TtsProvider {
   defaultModel: string;
   voiceKinds: string[];
   models: ProviderModel[];
+  configs: TtsProviderConfig[];
+  active_config: TtsProviderConfig | null;
+  config_count: number;
+  configuration_state: 'active' | 'inactive' | 'unconfigured';
+  status?: ProviderStatus | null;
+}
+
+interface TtsProviderConfig {
+  id: number | null;
+  name: string;
+  provider: string;
+  api_url?: string | null;
+  model?: string | null;
+  is_active: boolean;
+  has_api_key: boolean;
+  source: 'database' | 'environment';
+  read_only: boolean;
 }
 
 interface VoiceProfile {
@@ -131,6 +148,8 @@ const favorites = ref<VoiceFavorite[]>([]);
 const cloneJobs = ref<Job[]>([]);
 const loading = ref(false);
 const balanceLoading = ref(false);
+const activatingConfigId = ref<number | null>(null);
+const configActionError = ref('');
 const loadingMoreProfiles = ref(false);
 const loadingMoreProviderVoices = ref(false);
 const detailItem = ref<DetailItem>(null);
@@ -170,7 +189,11 @@ const providerOptions = computed(() => [
 
 const cloneProviderOptions = computed(() => (
   providers.value
-    .filter((provider) => provider.models.some((model) => model.capabilities?.cloneVoice))
+    .filter((provider) => (
+      provider.active_config
+      && isProviderSynthAvailable(provider.provider)
+      && provider.models.some((model) => model.capabilities?.cloneVoice)
+    ))
     .map((provider) => ({ value: provider.provider, label: provider.displayName || provider.provider }))
 ));
 
@@ -188,9 +211,9 @@ const selectedCloneProviderLabel = computed(() => (
 ));
 
 const providerSummary = computed(() => {
-  const configured = providers.value.length;
+  const configured = providers.value.filter((provider) => provider.active_config).length;
   const voices = platformVoices.value.length;
-  return `VOICE LIBRARY // ${voiceProfiles.value.length} ASSETS // ${voices} PROVIDER VOICES // ${configured} PROVIDERS`;
+  return `VOICE LIBRARY // ${voiceProfiles.value.length} ASSETS // ${voices} PROVIDER VOICES // ${configured}/${providers.value.length} ACTIVE PROVIDERS`;
 });
 
 const filteredProfiles = computed(() => {
@@ -315,15 +338,25 @@ const favoriteKeyForProviderVoice = (voice: ProviderVoice) => providerVoiceKey(v
 const favoriteKeys = computed(() => new Set(favorites.value.map((favorite) => favorite.favorite_key)));
 const isFavoriteKey = (key: string) => favoriteKeys.value.has(key);
 const providerStatusFor = (provider: string) => providerStatuses.value[provider];
-const isProviderSynthAvailable = (provider: string) => providerStatusFor(provider)?.synthesis_available !== false;
-const providerUnavailableReason = (provider: string) => providerStatusFor(provider)?.reason || '该平台当前不可配音';
+const providerFor = (provider: string) => providers.value.find((item) => item.provider === provider);
+const isProviderSynthAvailable = (provider: string) => (
+  Boolean(providerFor(provider)?.active_config)
+  && providerStatusFor(provider)?.synthesis_available !== false
+);
+const providerUnavailableReason = (provider: string) => {
+  const providerGroup = providerFor(provider);
+  if (!providerGroup?.configs?.length) return '尚未创建配置';
+  if (!providerGroup.active_config) return '已有配置，但尚未激活';
+  return providerStatusFor(provider)?.reason || '该平台当前不可配音';
+};
 const hasProviderAccountWarning = (provider: string) => (
   providerStatusFor(provider)?.billing?.balance_status === 'insufficient'
 );
 const providerStatusLabel = (provider: string) => {
+  if (!providerFor(provider)?.active_config) return '未激活配置';
   if (!isProviderSynthAvailable(provider)) return '不可配音';
   if (hasProviderAccountWarning(provider)) return '余额不足 · 可重试';
-  return '可配音';
+  return '配置已生效';
 };
 const isProfileSelected = (profile: VoiceProfile) => selectedProfileIds.value.has(profile.id);
 const isProfileCloning = (profile: VoiceProfile) => cloningProfileIds.value.has(profile.id);
@@ -397,32 +430,51 @@ const mapLiveVoice = (voice: any, kind: 'system' | 'clone'): ProviderVoice => ({
 const providerKindKey = (provider: string, kind: 'system' | 'clone') => `${provider}:${kind}`;
 
 const currentProviderIds = () => (
-  providers.value.length > 0
-    ? providers.value.map((provider) => provider.provider).filter(Boolean)
-    : ['mosi']
+  providers.value
+    .filter((provider) => provider.active_config)
+    .map((provider) => provider.provider)
+    .filter(Boolean)
 );
 
 const fetchProviders = async () => {
-  const [res, statusRes]: any[] = await Promise.all([
-    request.get('/tts/providers'),
-    request.get('/tts/providers/status').catch(() => ({ data: [] })),
-  ]);
+  const res: any = await request.get('/tts/providers');
   providers.value = res.data || [];
-  providerStatuses.value = Object.fromEntries((statusRes.data || []).map((status: ProviderStatus) => [status.provider, status]));
+  providerStatuses.value = Object.fromEntries(
+    providers.value
+      .filter((provider) => provider.status)
+      .map((provider) => [provider.provider, provider.status as ProviderStatus])
+  );
 };
 
-const refreshBalances = async () => {
+const refreshProviderRuntime = async () => {
   if (balanceLoading.value) return;
   balanceLoading.value = true;
+  configActionError.value = '';
   try {
-    const response: any = await request.get('/tts/providers/status');
-    providerStatuses.value = Object.fromEntries(
-      (response.data || []).map((status: ProviderStatus) => [status.provider, status])
-    );
+    await fetchProviders();
+    await fetchPlatformVoices();
   } catch (error) {
-    console.error('Failed to refresh provider balances:', error);
+    console.error('Failed to refresh provider runtime:', error);
+    configActionError.value = '刷新平台配置失败，请检查 API 服务状态';
   } finally {
     balanceLoading.value = false;
+  }
+};
+
+const activateProviderConfig = async (provider: TtsProvider, config: TtsProviderConfig) => {
+  if (config.id === null || config.read_only || config.is_active || activatingConfigId.value !== null) return;
+  activatingConfigId.value = config.id;
+  configActionError.value = '';
+  try {
+    await request.post(`/settings/tts/${config.id}/active`);
+    selectedProvider.value = provider.provider;
+    await fetchProviders();
+    await fetchPlatformVoices();
+  } catch (error: any) {
+    console.error('Failed to activate TTS configuration:', error);
+    configActionError.value = error?.response?.data?.error || '激活配置失败';
+  } finally {
+    activatingConfigId.value = null;
   }
 };
 
@@ -903,8 +955,8 @@ onBeforeUnmount(() => {
         <span class="console-subtitle mono-text">{{ providerSummary }}</span>
       </div>
       <div class="header-actions">
-        <button class="icon-btn" title="刷新平台账户状态与余额" :disabled="loading || balanceLoading" @click="refreshBalances">
-          {{ balanceLoading ? '刷新中…' : '刷新余额' }}
+        <button class="icon-btn" title="重新读取生效配置、平台状态、余额和音色" :disabled="loading || balanceLoading" @click="refreshProviderRuntime">
+          {{ balanceLoading ? '刷新中…' : '刷新配置与音色' }}
         </button>
         <button class="btn btn-outline" disabled title="录制功能待接入">录制样本</button>
         <button class="btn btn-primary" @click="openUpload">上传样本</button>
@@ -912,29 +964,37 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="provider-strip">
-      <button
+      <article
         v-for="provider in providers"
         :key="provider.provider"
-        class="provider-pill"
+        class="provider-group"
         :class="{ active: selectedProvider === provider.provider }"
-        @click="selectedProvider = selectedProvider === provider.provider ? 'all' : provider.provider"
       >
-        <span class="provider-name">{{ provider.displayName || provider.provider }}</span>
-        <span class="provider-meta mono-text">{{ provider.defaultModel }}</span>
-        <span
-          class="provider-status"
-          :class="{
-            unavailable: !isProviderSynthAvailable(provider.provider),
-            'account-warning': hasProviderAccountWarning(provider.provider),
-          }"
-          :title="hasProviderAccountWarning(provider.provider)
-            ? providerAccountTitle(provider.provider)
-            : isProviderSynthAvailable(provider.provider)
-              ? '平台已配置，可用于配音'
-              : providerUnavailableReason(provider.provider)"
+        <button
+          class="provider-group-header"
+          @click="selectedProvider = selectedProvider === provider.provider ? 'all' : provider.provider"
         >
-          {{ providerStatusLabel(provider.provider) }}
-        </span>
+          <span>
+            <span class="provider-type mono-text">PROVIDER TYPE</span>
+            <strong class="provider-name">{{ provider.displayName || provider.provider }}</strong>
+            <span class="provider-id mono-text">{{ provider.provider }}</span>
+          </span>
+          <span
+            class="provider-status"
+            :class="{
+              unavailable: !isProviderSynthAvailable(provider.provider),
+              'account-warning': hasProviderAccountWarning(provider.provider),
+            }"
+            :title="hasProviderAccountWarning(provider.provider)
+              ? providerAccountTitle(provider.provider)
+              : isProviderSynthAvailable(provider.provider)
+                ? '当前配置已生效，后续请求将使用此配置'
+                : providerUnavailableReason(provider.provider)"
+          >
+            {{ providerStatusLabel(provider.provider) }}
+          </span>
+        </button>
+
         <div
           v-if="provider.provider === 'fish_audio'"
           class="provider-account"
@@ -964,9 +1024,52 @@ onBeforeUnmount(() => {
           <span><b>最近一次</b>{{ formatCredit(providerStatusFor(provider.provider)?.billing?.last_credit_cost) }} credits</span>
           <span class="provider-usage-time"><b>最近计费</b>{{ formatUsageTime(providerStatusFor(provider.provider)?.billing?.last_used_at) }}</span>
         </div>
-      </button>
+
+        <div class="provider-configs">
+          <div class="config-list-heading">
+            <span>配置列表</span>
+            <span class="mono-text">{{ provider.config_count }} CONFIG{{ provider.config_count === 1 ? '' : 'S' }}</span>
+          </div>
+          <div
+            v-for="config in provider.configs"
+            :key="config.id ?? `${provider.provider}-environment`"
+            class="provider-config"
+            :class="{ active: config.is_active }"
+          >
+            <span class="config-state-indicator" aria-hidden="true"></span>
+            <div class="config-main">
+              <div class="config-name-row">
+                <strong>{{ config.name }}</strong>
+                <span v-if="config.is_active" class="config-badge active">当前生效</span>
+                <span v-if="config.source === 'environment'" class="config-badge environment">环境变量</span>
+              </div>
+              <div class="config-details mono-text">
+                <span>
+                  MODEL {{ config.model || (config.is_active ? providerStatusFor(provider.provider)?.recommended_model : null) || provider.defaultModel || '平台默认' }}
+                </span>
+                <span>{{ config.api_url || '官方 API' }}</span>
+                <span v-if="provider.provider !== 'fish_audio_self_hosted'">KEY {{ config.has_api_key ? '已配置' : '未配置' }}</span>
+              </div>
+            </div>
+            <button
+              v-if="!config.is_active && !config.read_only"
+              class="activate-config-btn"
+              :disabled="activatingConfigId !== null"
+              @click="activateProviderConfig(provider, config)"
+            >
+              {{ activatingConfigId === config.id ? '切换中…' : '设为生效' }}
+            </button>
+            <span v-else-if="config.is_active" class="runtime-route mono-text">配音使用此配置</span>
+          </div>
+          <div v-if="provider.configs.length === 0" class="config-empty-state">
+            <span>尚未添加 {{ provider.displayName || provider.provider }} 配置</span>
+            <RouterLink to="/settings">前往系统配置</RouterLink>
+          </div>
+        </div>
+      </article>
       <div v-if="providers.length === 0" class="provider-empty mono-text">暂无可用 Provider</div>
     </div>
+    <div v-if="configActionError" class="config-action-error">{{ configActionError }}</div>
 
     <div class="toolbar">
       <div class="tabs">
@@ -1531,31 +1634,57 @@ onBeforeUnmount(() => {
 }
 
 .provider-strip {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(280px, 1fr));
   gap: 10px;
   padding: 10px;
-  min-height: 64px;
+  align-items: start;
 }
 
-.provider-pill {
-  display: grid;
-  grid-template-columns: auto auto;
-  gap: 3px 12px;
-  min-width: 270px;
-  flex: 1 1 300px;
-  padding: 10px 12px;
+.provider-group {
+  min-width: 0;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   color: var(--text-secondary);
-  text-align: left;
   background: var(--bg-input);
+  overflow: hidden;
+  transition: border-color 0.18s, box-shadow 0.18s;
 }
 
-.provider-pill.active,
-.provider-pill:hover {
+.provider-group.active {
   border-color: rgba(0, 212, 170, 0.45);
-  color: var(--text-primary);
+  box-shadow: inset 0 2px 0 rgba(0, 212, 170, 0.5);
+}
+
+.provider-group-header {
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.provider-group-header:hover {
+  background: rgba(0, 212, 170, 0.035);
+}
+
+.provider-group-header > span:first-child {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 8px;
+  align-items: baseline;
+}
+
+.provider-type {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: 8px;
+  letter-spacing: 0.12em;
 }
 
 .provider-name {
@@ -1564,11 +1693,17 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
+.provider-id {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .provider-status {
-  grid-column: 2;
-  grid-row: 1;
-  align-self: center;
-  justify-self: end;
+  flex-shrink: 0;
   color: var(--accent-cyan);
   font-size: 11px;
 }
@@ -1582,13 +1717,13 @@ onBeforeUnmount(() => {
 }
 
 .provider-account {
-  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 5px 12px;
-  margin-top: 6px;
-  padding-top: 8px;
+  padding: 8px 11px;
   border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.018);
   color: var(--text-secondary);
   font-size: 10px;
   line-height: 1.5;
@@ -1613,6 +1748,163 @@ onBeforeUnmount(() => {
 .provider-balance-note,
 .provider-usage-time {
   flex-basis: 100%;
+}
+
+.provider-configs {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+}
+
+.config-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 2px;
+  color: var(--text-muted);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.provider-config {
+  position: relative;
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 58px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.provider-config.active {
+  border-color: rgba(0, 212, 170, 0.28);
+  background: rgba(0, 212, 170, 0.045);
+}
+
+.config-state-indicator {
+  width: 3px;
+  height: 100%;
+  min-height: 38px;
+  border-radius: 2px;
+  background: var(--border-color);
+}
+
+.provider-config.active .config-state-indicator {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 8px rgba(0, 212, 170, 0.35);
+}
+
+.config-main {
+  min-width: 0;
+}
+
+.config-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.config-name-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-badge {
+  padding: 1px 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.config-badge.active {
+  border-color: rgba(0, 212, 170, 0.35);
+  color: var(--accent-cyan);
+}
+
+.config-badge.environment {
+  border-color: rgba(96, 165, 250, 0.35);
+  color: #93c5fd;
+}
+
+.config-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.config-details span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activate-config-btn {
+  padding: 5px 7px;
+  border: 1px solid rgba(0, 212, 170, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--accent-cyan);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.activate-config-btn:hover:not(:disabled) {
+  background: rgba(0, 212, 170, 0.08);
+}
+
+.activate-config-btn:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+.runtime-route {
+  color: var(--accent-cyan);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.config-empty-state {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.config-empty-state a {
+  flex-shrink: 0;
+  color: var(--accent-cyan);
+}
+
+.config-action-error {
+  margin: 0 10px;
+  padding: 7px 10px;
+  border: 1px solid rgba(248, 113, 113, 0.32);
+  border-radius: var(--radius-sm);
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.06);
+  font-size: 11px;
 }
 
 .provider-empty {
@@ -2202,6 +2494,10 @@ onBeforeUnmount(() => {
   }
 
   .console-body {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-strip {
     grid-template-columns: 1fr;
   }
 

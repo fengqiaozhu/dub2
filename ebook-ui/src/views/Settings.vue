@@ -449,7 +449,7 @@ onMounted(() => {
         <div class="panel-section-header">
           <div>
             <h3>TTS 语音平台 API 密钥列表</h3>
-            <p>支持配置多个魔音 (Mosi)、Fish Audio 在线及 Fish Audio 自部署的密钥与地址参数。**每个服务商可以分别指定一个处于激活状态的配置**，合成时即刻调取使用。</p>
+            <p>支持配置多个魔音 (Mosi)、Fish Audio 在线及 Fish Audio 自部署的密钥与地址参数。每个服务商只能有一个生效配置；音色管理、余额查询、克隆和配音会统一使用它。</p>
           </div>
           <button class="btn btn-primary glow-effect-cyan" @click="openAddTtsModal">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;">
@@ -474,7 +474,7 @@ onMounted(() => {
             </svg>
           </div>
           <h3>暂无 TTS 平台配置</h3>
-          <p>请点击上方“添加 TTS 配置”为魔音或 Fish Audio 配置 API 密钥。如暂无配置，系统会自动回退使用下方的环境变量或默认值。</p>
+          <p>请点击上方“添加 TTS 配置”为魔音或 Fish Audio 配置 API 密钥。仅当某类服务从未创建过数据库配置时，系统才会显示并使用其环境变量兼容配置。</p>
         </div>
 
         <div class="ai-config-grid" v-else>

@@ -82,7 +82,7 @@ async function saveVoiceSample(file, fields = {}) {
 class TtsController {
   async getProviders(req, res) {
     try {
-      res.json({ data: ttsService.getProviders() });
+      res.json({ data: await ttsService.getProviders() });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

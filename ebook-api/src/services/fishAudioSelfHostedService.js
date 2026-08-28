@@ -6,6 +6,7 @@ const { randomUUID } = require('crypto');
 const { extractMarker } = require('./tts/voiceProfileIdentity');
 const storageService = require('./storage/storageService');
 const { mediaUrlForKey } = require('./storage/keyBuilder');
+const providerConfigService = require('./tts/providerConfigService');
 
 const DEFAULT_BASE_URL = 'http://localhost:8080';
 const DEFAULT_FORMAT = process.env.FISH_SELF_HOSTED_DEFAULT_FORMAT || 'wav';
@@ -133,16 +134,24 @@ class FishAudioSelfHostedService {
 
   async getBaseUrl() {
     try {
-      const { ttsConfigRepository } = getRepositories();
-      const activeDbConfig = await ttsConfigRepository.findActiveByProvider('fish_audio_self_hosted');
-      if (activeDbConfig && activeDbConfig.api_url) {
-        return normalizeBaseUrl(activeDbConfig.api_url);
+      const activeConfig = await providerConfigService.resolveProviderConfig('fish_audio_self_hosted');
+      if (activeConfig?.api_url) {
+        return normalizeBaseUrl(activeConfig.api_url);
       }
     } catch (err) {
-      console.warn('Failed to fetch active Fish Audio self-hosted config from tts_configs:', err.message);
+      console.warn('Failed to resolve active Fish Audio self-hosted config:', err.message);
     }
+    return null;
+  }
 
-    return normalizeBaseUrl(process.env.FISH_SELF_HOSTED_BASE_URL || this.baseUrl);
+  async getRequiredBaseUrl() {
+    const baseUrl = await this.getBaseUrl();
+    if (!baseUrl) {
+      const error = new Error('Fish Audio self-hosted has no active configuration');
+      error.statusCode = 503;
+      throw error;
+    }
+    return baseUrl;
   }
 
   getTimeoutMs(options = {}) {
@@ -152,7 +161,15 @@ class FishAudioSelfHostedService {
 
   async getStatus() {
     const baseUrl = await this.getBaseUrl();
-    const configured = Boolean(baseUrl && baseUrl !== normalizeBaseUrl(''));
+    const configured = Boolean(baseUrl);
+    if (!configured) {
+      return {
+        configured: false,
+        available: false,
+        status: 'unconfigured',
+        reason: 'Fish Audio self-hosted has no active configuration'
+      };
+    }
     try {
       const response = await axios.get(`${baseUrl}/v1/references/list`, {
         timeout: 10000
@@ -183,7 +200,7 @@ class FishAudioSelfHostedService {
       };
     }
 
-    const baseUrl = await this.getBaseUrl();
+    const baseUrl = await this.getRequiredBaseUrl();
     const response = await axios.get(`${baseUrl}/v1/references/list`, {
       timeout: 30000
     });
@@ -217,7 +234,7 @@ class FishAudioSelfHostedService {
     form.append('audio', fs.createReadStream(filePath));
     form.append('text', text);
 
-    const baseUrl = await this.getBaseUrl();
+    const baseUrl = await this.getRequiredBaseUrl();
     const response = await axios.post(`${baseUrl}/v1/references/add`, form, {
       headers: form.getHeaders(),
       timeout: this.getTimeoutMs()
@@ -240,7 +257,7 @@ class FishAudioSelfHostedService {
       throw new Error('voiceId is required');
     }
 
-    const baseUrl = await this.getBaseUrl();
+    const baseUrl = await this.getRequiredBaseUrl();
     const response = await axios.delete(`${baseUrl}/v1/references/delete`, {
       data: { reference_id: voiceId },
       headers: { 'Content-Type': 'application/json' },
@@ -276,7 +293,7 @@ class FishAudioSelfHostedService {
     if (options.repetition_penalty) payload.repetition_penalty = options.repetition_penalty;
     if (options.temperature) payload.temperature = options.temperature;
 
-    const baseUrl = await this.getBaseUrl();
+    const baseUrl = await this.getRequiredBaseUrl();
     const response = await axios.post(`${baseUrl}/v1/tts`, payload, {
       headers: { 'Content-Type': 'application/json' },
       responseType: 'arraybuffer',

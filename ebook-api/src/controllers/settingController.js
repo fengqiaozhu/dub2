@@ -2,6 +2,8 @@ const { systemSettingRepository, aiConfigRepository, ttsConfigRepository } = req
 const fishAudioCatalogService = require('../services/fishAudioCatalogService');
 const fishAudioService = require('../services/fishAudioService');
 
+const TTS_PROVIDERS = new Set(['mosi', 'fish_audio', 'fish_audio_self_hosted']);
+
 function normalizeOptionalModel(model) {
   if (model === undefined || model === null) return null;
   const normalized = String(model).trim();
@@ -173,6 +175,9 @@ class SettingController {
       if (!name || !provider) {
         return res.status(400).json({ error: 'Missing required fields: name, provider' });
       }
+      if (!TTS_PROVIDERS.has(provider)) {
+        return res.status(400).json({ error: 'Unsupported TTS provider' });
+      }
 
       const id = await ttsConfigRepository.create({
         name,
@@ -182,10 +187,6 @@ class SettingController {
         model: normalizeOptionalModel(model),
         is_active: Boolean(is_active)
       });
-
-      if (is_active) {
-        await ttsConfigRepository.setActive(id, provider);
-      }
 
       res.status(201).json({ message: 'TTS configuration created successfully', id });
     } catch (error) {
@@ -205,15 +206,13 @@ class SettingController {
       if (api_key !== undefined) updates.api_key = api_key;
       if (model !== undefined) updates.model = normalizeOptionalModel(model);
       if (is_active !== undefined) updates.is_active = Boolean(is_active);
+      if (updates.provider !== undefined && !TTS_PROVIDERS.has(updates.provider)) {
+        return res.status(400).json({ error: 'Unsupported TTS provider' });
+      }
 
       const success = await ttsConfigRepository.update(id, updates);
       if (!success) {
         return res.status(404).json({ error: 'TTS configuration not found or no changes made' });
-      }
-
-      const config = await ttsConfigRepository.findById(id);
-      if (config && config.is_active) {
-        await ttsConfigRepository.setActive(id, config.provider);
       }
 
       res.json({ message: 'TTS configuration updated successfully' });
@@ -243,7 +242,7 @@ class SettingController {
         return res.status(404).json({ error: 'TTS configuration not found' });
       }
 
-      await ttsConfigRepository.setActive(id, config.provider);
+      await ttsConfigRepository.setActive(id);
       res.json({ message: 'TTS configuration activated successfully' });
     } catch (error) {
       res.status(500).json({ error: error.message });

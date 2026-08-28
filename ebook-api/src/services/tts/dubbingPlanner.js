@@ -13,6 +13,7 @@ const {
   hasSpeakableContent
 } = require('../chapterAudioState');
 const providerRegistry = require('./providerRegistry');
+const providerConfigService = require('./providerConfigService');
 
 function createEmptyProviderSummary(provider) {
   return {
@@ -140,6 +141,14 @@ async function createPlan(chapterId, options = {}) {
   const bindings = await characterVoiceBindingRepository.findByBookId(chapter.book_id);
   const bindingMap = new Map(bindings.map((binding) => [binding.character_name, binding]));
   const roles = await getDubbingRoles(chapterId, skipRanges);
+  const providerConfigCache = new Map();
+
+  const getActiveProviderConfig = async (provider) => {
+    if (!providerConfigCache.has(provider)) {
+      providerConfigCache.set(provider, providerConfigService.resolveProviderConfig(provider));
+    }
+    return await providerConfigCache.get(provider);
+  };
 
   const rolePlans = await Promise.all(roles.map(async (characterName) => {
     const binding = bindingMap.get(characterName);
@@ -153,22 +162,33 @@ async function createPlan(chapterId, options = {}) {
     }
 
     const resolved = await resolveBinding(binding, { requireActive: true });
+    const providerConfig = resolved.ready
+      ? await getActiveProviderConfig(resolved.provider)
+      : null;
+    const providerReady = resolved.ready && Boolean(providerConfig);
+    const effectiveModel = String(providerConfig?.model || '').trim()
+      || resolved.model
+      || (providerReady ? providerRegistry.get(resolved.provider).getCapabilities().defaultModel : undefined);
     return {
       character_name: characterName,
-      ready: resolved.ready,
-      status: resolved.status,
-      message: resolved.message,
+      ready: providerReady,
+      status: resolved.ready && !providerConfig ? 'provider_unconfigured' : resolved.status,
+      message: resolved.ready && !providerConfig
+        ? `${resolved.provider} 没有生效的 TTS 配置`
+        : resolved.message,
       provider: resolved.provider,
       provider_voice_id: resolved.providerVoiceId,
       voice_profile_id: resolved.voiceProfileId,
-      model: resolved.model,
+      model: effectiveModel,
       voice_source: binding.voice_source,
       binding_mode: binding.voice_profile_id ? 'voice_profile' : 'provider_voice',
-      route: resolved.ready ? {
+      route: providerReady ? {
         provider: resolved.provider,
         provider_voice_id: resolved.providerVoiceId,
         voice_profile_id: resolved.voiceProfileId,
-        model: resolved.model,
+        model: effectiveModel,
+        provider_config_id: providerConfig.id ?? null,
+        provider_config_source: providerConfig.source || 'database',
         source: resolved.source
       } : null,
       intent: resolved.intent

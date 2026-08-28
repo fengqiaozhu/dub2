@@ -42,6 +42,8 @@ function computeDialogueAudioHash(dialogue, route = {}) {
     char_end: dialogue.char_end,
     emotion: dialogue.emotion || '',
     provider: route.provider,
+    provider_config_id: route.providerConfigId || route.provider_config_id,
+    provider_config_source: route.providerConfigSource || route.provider_config_source,
     model: route.model,
     voice_id: route.voiceId || route.providerVoiceId || route.provider_voice_id,
     voice_profile_id: route.voiceProfileId || route.voice_profile_id,

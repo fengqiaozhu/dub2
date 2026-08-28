@@ -7,8 +7,9 @@ const { appendMarker } = require('./tts/voiceProfileIdentity');
 const storageService = require('./storage/storageService');
 const { mediaUrlForKey } = require('./storage/keyBuilder');
 const { summarizeFishAccount } = require('./fishAudioAccount');
+const providerConfigService = require('./tts/providerConfigService');
 
-const DEFAULT_MODEL = process.env.FISH_DEFAULT_MODEL || 's2.1-pro';
+const DEFAULT_MODEL = 's2.1-pro';
 const DEFAULT_FORMAT = process.env.FISH_DEFAULT_FORMAT || 'mp3';
 const DEFAULT_TIMEOUT_SECONDS = parseInt(process.env.FISH_TIMEOUT_SECONDS, 10) || 240;
 
@@ -49,26 +50,21 @@ class FishAudioService {
 
   async getActiveConfig() {
     try {
-      const { ttsConfigRepository } = require('../repositories');
-      const activeDbConfig = await ttsConfigRepository.findActiveByProvider('fish_audio');
-      if (activeDbConfig) return activeDbConfig;
+      return await providerConfigService.resolveProviderConfig('fish_audio');
     } catch (err) {
-      console.warn('Failed to fetch active Fish Audio config from tts_configs:', err.message);
+      console.warn('Failed to resolve active Fish Audio config:', err.message);
+      return null;
     }
-
-    return null;
   }
 
   async getApiKey() {
     const activeDbConfig = await this.getActiveConfig();
-    if (activeDbConfig?.api_key) return activeDbConfig.api_key;
-
-    return process.env.FISH_API_KEY;
+    return activeDbConfig?.api_key || null;
   }
 
   async getConfiguredModel({ accountStatus } = {}) {
     const activeDbConfig = await this.getActiveConfig();
-    const configuredModel = String(activeDbConfig?.model || process.env.FISH_DEFAULT_MODEL || '').trim();
+    const configuredModel = String(activeDbConfig?.model || '').trim();
     return configuredModel || accountStatus?.recommended_model || DEFAULT_MODEL;
   }
 

@@ -70,3 +70,17 @@ test('TTS configuration persists a manually entered future model', async (t) => 
   assert.equal(response.statusCode, 201);
   assert.equal(savedConfig.model, 's2.2-pro');
 });
+
+test('TTS configuration rejects providers outside the three supported types', async () => {
+  const response = createResponse();
+  await settingController.createTtsConfig({
+    body: {
+      name: 'Unknown provider',
+      provider: 'other_tts',
+      api_key: 'redacted-test-key'
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.error, 'Unsupported TTS provider');
+});

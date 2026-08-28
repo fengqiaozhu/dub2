@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const storageService = require('./storage/storageService');
 const { mediaUrlForKey } = require('./storage/keyBuilder');
 const { extractMosiErrorCode, summarizeMosiBilling } = require('./mosiAccount');
+const providerConfigService = require('./tts/providerConfigService');
 
 class MosiService {
   constructor() {
@@ -14,32 +15,28 @@ class MosiService {
 
   async getActiveConfig() {
     try {
-      const { ttsConfigRepository } = require('../repositories');
-      const activeDbConfig = await ttsConfigRepository.findActiveByProvider('mosi');
-      if (activeDbConfig) {
+      const activeConfig = await providerConfigService.resolveProviderConfig('mosi');
+      if (activeConfig) {
         return {
-          baseUrl: activeDbConfig.api_url || 'https://studio.mosi.cn',
-          apiKey: activeDbConfig.api_key
+          ...activeConfig,
+          baseUrl: activeConfig.api_url || 'https://studio.mosi.cn',
+          apiKey: activeConfig.api_key
         };
       }
     } catch (err) {
-      console.warn('Failed to fetch active Mosi config from tts_configs:', err.message);
+      console.warn('Failed to resolve active Mosi config:', err.message);
     }
-
-    // Fallback directly to environment variables
-    const baseUrl = process.env.MOSI_BASE_URL || 'https://studio.mosi.cn';
-    const apiKey = process.env.MOSI_API_KEY;
-    return { baseUrl, apiKey };
+    return null;
   }
 
   async getBaseUrl() {
     const config = await this.getActiveConfig();
-    return config.baseUrl;
+    return config?.baseUrl || 'https://studio.mosi.cn';
   }
 
   async getApiKey() {
     const config = await this.getActiveConfig();
-    return config.apiKey;
+    return config?.apiKey || null;
   }
 
   async getHeaders(isFormData = false) {

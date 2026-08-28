@@ -241,6 +241,28 @@ CREATE TABLE IF NOT EXISTS tts_configs (
 );
 
 ALTER TABLE tts_configs ADD COLUMN IF NOT EXISTS model TEXT;
+
+WITH ranked_active_tts_configs AS (
+  SELECT
+    id,
+    ROW_NUMBER() OVER (
+      PARTITION BY provider
+      ORDER BY updated_at DESC, id DESC
+    ) AS active_rank
+  FROM tts_configs
+  WHERE is_active = TRUE
+)
+UPDATE tts_configs
+SET is_active = FALSE, updated_at = NOW()
+WHERE id IN (
+  SELECT id
+  FROM ranked_active_tts_configs
+  WHERE active_rank > 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tts_configs_active_provider
+  ON tts_configs (provider)
+  WHERE is_active = TRUE;
 `;
 
 async function initSchema() {
