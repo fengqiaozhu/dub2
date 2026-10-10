@@ -78,13 +78,15 @@ if (require.main === module) {
   (async () => {
     const ffmpeg = checkFfmpeg();
     const storageHealth = await inspectStorageHealth();
+    const missing = storageHealth.missing_objects;
+    const untracked = storageHealth.untracked_references;
     const result = {
       ffmpeg,
       referenced: storageHealth.referenced,
       storage_records: storageHealth.storage_records,
-      missing_objects: storageHealth.missing_objects,
-      untracked_references: storageHealth.untracked_references,
-      ok: storageHealth.ok && ffmpeg.ok
+      missing_objects: missing,
+      untracked_references: untracked,
+      ok: missing.length === 0 && untracked.length === 0 && ffmpeg.ok
     };
     console.log(JSON.stringify(result, null, 2));
     process.exit(result.ok ? 0 : 1);
