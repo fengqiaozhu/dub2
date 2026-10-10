@@ -10,7 +10,7 @@ const commonCapabilities = {
   stylePrompt: true,
   durationControl: false,
   ssml: false,
-  streaming: true,
+  streaming: false,
   outputFormats: ['mp3', 'wav', 'opus', 'pcm']
 };
 

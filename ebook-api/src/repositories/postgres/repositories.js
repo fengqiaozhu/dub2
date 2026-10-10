@@ -237,6 +237,24 @@ class ChapterCharacterRepository {
     return result.rowCount;
   }
 
+  async deleteByChapterIdExceptIds(chapterId, keepIds) {
+    const ids = (keepIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    let query;
+    let values;
+    if (ids.length === 0) {
+      query = 'DELETE FROM chapter_characters WHERE chapter_id = $1';
+      values = [chapterId];
+    } else {
+      const placeholders = ids.map((_, index) => `$${index + 2}`).join(', ');
+      query = `DELETE FROM chapter_characters WHERE chapter_id = $1 AND id NOT IN (${placeholders})`;
+      values = [chapterId, ...ids];
+    }
+    const result = await db.query(query, values);
+    return result.rowCount;
+  }
+
   async deleteUnusedByChapterId(chapterId) {
     const result = await db.query(`
       DELETE FROM chapter_characters
@@ -411,6 +429,24 @@ class DialogueRepository {
 
   async deleteByChapterId(chapterId) {
     const result = await db.query('DELETE FROM dialogues WHERE chapter_id = $1', [chapterId]);
+    return result.rowCount;
+  }
+
+  async deleteByChapterIdExceptIds(chapterId, keepIds) {
+    const ids = (keepIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    let query;
+    let values;
+    if (ids.length === 0) {
+      query = 'DELETE FROM dialogues WHERE chapter_id = $1';
+      values = [chapterId];
+    } else {
+      const placeholders = ids.map((_, index) => `$${index + 2}`).join(', ');
+      query = `DELETE FROM dialogues WHERE chapter_id = $1 AND id NOT IN (${placeholders})`;
+      values = [chapterId, ...ids];
+    }
+    const result = await db.query(query, values);
     return result.rowCount;
   }
 
@@ -1140,7 +1176,11 @@ class AiConfigRepository {
   }
 
   async findAll() {
-    return db.many('SELECT * FROM ai_configs ORDER BY is_active DESC, updated_at DESC, id DESC');
+    return db.many(`
+      SELECT id, name, api_url, api_key <> '' AS has_api_key, model, is_reasoning, is_active, created_at, updated_at
+      FROM ai_configs
+      ORDER BY is_active DESC, updated_at DESC, id DESC
+    `);
   }
 
   async delete(id) {
@@ -1231,7 +1271,11 @@ class TtsConfigRepository {
   }
 
   async findAll() {
-    return db.many('SELECT * FROM tts_configs ORDER BY provider ASC, is_active DESC, updated_at DESC, id DESC');
+    return db.many(`
+      SELECT id, name, provider, api_url, api_key <> '' AS has_api_key, model, is_active, created_at, updated_at
+      FROM tts_configs
+      ORDER BY provider ASC, is_active DESC, updated_at DESC, id DESC
+    `);
   }
 
   async findByProvider(provider) {

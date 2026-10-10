@@ -98,7 +98,8 @@ class ChapterController {
       try {
         plan = await dubbingPlanner.createPlan(id, { includeCompleted: true });
       } catch (planError) {
-        console.warn(`[ChapterController] Failed to build audio state for chapter ${id}:`, planError.message);
+        console.error(`[ChapterController] Failed to build audio state for chapter ${id}:`, planError);
+        return res.status(500).json({ error: 'internal_error' });
       }
       const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
       chapter.audio_items = buildChapterAudioItems(chapter, refreshedDialogues, taskMap, skipRanges);
@@ -137,7 +138,8 @@ class ChapterController {
 
       res.json({ data: chapter });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      console.error('[ChapterController] Failed to load chapter:', error);
+      res.status(500).json({ error: 'internal_error' });
     }
   }
 

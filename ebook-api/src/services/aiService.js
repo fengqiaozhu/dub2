@@ -56,14 +56,35 @@ class AiService {
     return this.openai;
   }
 
-  async retryableRequest(fn, retries = 3) {
+  isRetryableError(error) {
+    if (!error || typeof error !== 'object') return false;
+
+    const status = error.status ?? error.statusCode ?? error.response?.status;
+    if (status !== undefined && status !== null) {
+      return Number(status) >= 500;
+    }
+
+    const code = error.code || '';
+    if (/^(ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNABORTED|EPIPE)/.test(code)) {
+      return true;
+    }
+
+    const name = error.name || '';
+    if (/Timeout|TimedOut|Connection|Network|AbortError/i.test(name)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  async retryableRequest(fn, retries = 3, baseDelayMs = 1000) {
     for (let i = 0; i < retries; i++) {
       try {
         return await fn();
       } catch (error) {
-        if (i === retries - 1) throw error;
+        if (i === retries - 1 || !this.isRetryableError(error)) throw error;
         console.warn(`Request failed, retrying (${i + 1}/${retries})...`, error.message);
-        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Exponential-ish backoff
+        await new Promise(resolve => setTimeout(resolve, baseDelayMs * (i + 1))); // Exponential-ish backoff
       }
     }
   }
@@ -144,9 +165,24 @@ class AiService {
   async persistAnalysisResult(chapter, analysisResult) {
     const normalizedResult = this.normalizeAnalysisResult(analysisResult);
 
-    // 重新分析是强重置：清空本章既有标注，再用新的 AI 结果重建。
-    await dialogueRepository.deleteByChapterId(chapter.id);
-    await chapterCharacterRepository.deleteByChapterId(chapter.id);
+    // 重新分析不再整章强重置：人工标注（manual/confirmed 或手工来源）必须原样保留，
+    // 只重写纯 AI 标注；与受保护区间重叠的新 AI 行直接丢弃。
+    const existingDialogues = await dialogueRepository.findByChapterId(chapter.id);
+    const protectedDialogues = existingDialogues.filter((dialogue) => (
+      dialogue.annotation_status === 'manual'
+      || dialogue.annotation_status === 'confirmed'
+      || dialogue.source === 'manual'
+    ));
+    const protectedRanges = protectedDialogues
+      .filter((dialogue) => Number(dialogue.char_start) >= 0 && Number(dialogue.char_end) > Number(dialogue.char_start))
+      .map((dialogue) => ({ start: Number(dialogue.char_start), end: Number(dialogue.char_end) }));
+
+    const keepDialogueIds = protectedDialogues.map((dialogue) => Number(dialogue.id));
+    const keepCharacterIds = [...new Set(protectedDialogues.map((dialogue) => Number(dialogue.chapter_character_id)))];
+
+    await dialogueRepository.deleteByChapterIdExceptIds(chapter.id, keepDialogueIds);
+    await chapterCharacterRepository.deleteByChapterIdExceptIds(chapter.id, keepCharacterIds);
+
     const usedRanges = [];
 
     for (let i = 0; i < normalizedResult.length; i++) {
@@ -160,23 +196,26 @@ class AiService {
       const dialoguesToInsert = character.dialogues.map((d, idx) => {
         const charStart = d.char_index ? d.char_index[0] : -1;
         const charEnd = d.char_index ? d.char_index[1] : -1;
-        const validRange = charStart >= 0 && charEnd > charStart &&
-          !usedRanges.some((range) => charStart < range.end && range.start < charEnd);
-        const content = normalizeDialogueContent(validRange ? chapter.content.slice(charStart, charEnd) : d.content);
+        const validRange = charStart >= 0 && charEnd > charStart;
+        if (validRange && protectedRanges.some((range) => charStart < range.end && range.start < charEnd)) {
+          return null;
+        }
+        const inUse = validRange && usedRanges.some((range) => charStart < range.end && range.start < charEnd);
+        const content = normalizeDialogueContent(validRange && !inUse ? chapter.content.slice(charStart, charEnd) : d.content);
         if (!content) return null;
-        if (validRange) usedRanges.push({ start: charStart, end: charEnd });
+        if (validRange && !inUse) usedRanges.push({ start: charStart, end: charEnd });
         return {
           chapter_character_id: chapterCharacterId,
           segment_id: null,
           chapter_id: chapter.id,
           content,
           emotion: d.emotion ?? '',
-          char_start: validRange ? charStart : -1,
-          char_end: validRange ? charEnd : -1,
+          char_start: validRange && !inUse ? charStart : -1,
+          char_end: validRange && !inUse ? charEnd : -1,
           source: 'ai',
           annotation_status: 'ai',
           updated_by: 'ai',
-          order_index: validRange ? charStart : idx,
+          order_index: validRange && !inUse ? charStart : idx,
         };
       }).filter(Boolean);
       await dialogueRepository.createMany(dialoguesToInsert);

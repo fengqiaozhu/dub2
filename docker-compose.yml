@@ -52,6 +52,9 @@ services:
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_DEFAULT_MODEL: ${FISH_DEFAULT_MODEL:-}
       FISH_SELF_HOSTED_BASE_URL: ${FISH_SELF_HOSTED_BASE_URL:-}
+      DUB_ACCESS_TOKEN: ${DUB_ACCESS_TOKEN:-}
+      DUB_AUTH_MODE: ${DUB_AUTH_MODE:-}
+      DUB_CORS_ORIGIN: ${DUB_CORS_ORIGIN:-http://localhost:13001}
     ports:
       - "13000:13000"
     depends_on:

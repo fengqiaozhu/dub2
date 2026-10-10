@@ -8,7 +8,7 @@ import DialogueView from '@/components/workspace/DialogueView.vue';
 import BookVoiceBinding from '@/components/workspace/BookVoiceBinding.vue';
 import RoleVoiceMapping from '@/components/workspace/RoleVoiceMapping.vue';
 import AudioTrack from '@/components/common/AudioTrack.vue';
-import request, { toMediaUrl, ANALYSIS_TIMEOUT } from '@/api/request';
+import request, { toMediaUrl, authHeaders, ANALYSIS_TIMEOUT } from '@/api/request';
 
 const route = useRoute();
 const router = useRouter();
@@ -445,7 +445,7 @@ const readErrorMessage = async (response: Response) => {
 const downloadChapterAudioArchive = async () => {
   if (!workspaceStore.activeChapterId) return;
   try {
-    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/export-audio`);
+    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/export-audio`, { headers: authHeaders() });
     if (!response.ok) {
       showWarning('单句导出失败', await readErrorMessage(response));
       return;
@@ -461,7 +461,7 @@ const downloadChapterAudioArchive = async () => {
 const downloadStorySourcePackage = async () => {
   if (!workspaceStore.activeChapterId) return;
   try {
-    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/story-source-package`);
+    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/story-source-package`, { headers: authHeaders() });
     if (!response.ok) {
       showWarning('故事源包导出失败', await readErrorMessage(response));
       return;
