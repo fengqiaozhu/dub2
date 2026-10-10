@@ -19,6 +19,7 @@ const {
   buildChapterAudioItems,
   buildNarratorRanges,
   getChapterAudioItems,
+  getChapterExportReadiness,
   computeChapterAudioHash
 } = require('../services/chapterAudioState');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
@@ -102,6 +103,8 @@ class ChapterController {
       const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
       chapter.audio_items = buildChapterAudioItems(chapter, refreshedDialogues, taskMap, skipRanges);
 
+      chapter.export_readiness = getChapterExportReadiness(chapter.audio_items);
+
       const totalAudioTargets = chapter.audio_items.length;
       const completedAudioTargets = chapter.audio_items.filter((item) => item.audio_status === 'current').length;
       const skippedAudioTargets = chapter.audio_items.filter((item) => item.audio_status === 'skipped').length;
@@ -125,7 +128,7 @@ class ChapterController {
         const currentHash = computeChapterAudioHash(audioItems);
         chapter.merged_audio_export = {
           ...exportRecord,
-          is_current: exportRecord.source_hash === currentHash,
+          is_current: chapter.export_readiness.ready && exportRecord.source_hash === currentHash,
           current_source_hash: currentHash
         };
       } else {

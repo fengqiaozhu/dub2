@@ -12,6 +12,7 @@ const {
 } = require('../repositories');
 const {
   buildChapterAudioItems,
+  getChapterExportReadiness,
   getChapterAudioItems,
   computeChapterAudioHash
 } = require('../services/chapterAudioState');
@@ -58,8 +59,13 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
     const skipRanges = await chapterAudioSkipRangeRepository.findByChapterId(chapterId);
     const plan = await dubbingPlanner.createPlan(chapterId, { includeCompleted: true });
     const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
+    const chapterItems = buildChapterAudioItems(chapter, dialogues, taskMap, skipRanges);
+    const readiness = getChapterExportReadiness(chapterItems);
+    if (!readiness.ready) {
+      throw new Error(`章节无法拼接：${readiness.pending} 句未完成（缺失 ${readiness.missing}，过期 ${readiness.stale}，失败 ${readiness.failed}）。请先配音或明确跳过；空章节无法拼接。`);
+    }
     const currentIds = new Set(
-      buildChapterAudioItems(chapter, dialogues, taskMap, skipRanges)
+      chapterItems
         .filter((item) => item.audio_status === 'current')
         .map((item) => String(item.id))
     );

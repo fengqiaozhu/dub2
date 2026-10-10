@@ -932,6 +932,10 @@ async function runAnalysis() {
           isAnalysisSubmitting.value = false;
           workspaceStore.setTabWorkspaceJob(activeBookId, 'analysis', null);
           console.error('Analysis failed', error);
+        },
+        () => {
+          isAnalysisSubmitting.value = false;
+          workspaceStore.setTabWorkspaceJob(activeBookId, 'analysis', null);
         }
       );
     } else {
@@ -941,6 +945,16 @@ async function runAnalysis() {
     console.error('Failed to start analysis:', err);
     isAnalysisSubmitting.value = false;
   }
+}
+
+async function stopAnalysis() {
+  const jobId = workspaceStore.analysisJobId;
+  const activeBookId = workspaceStore.activeBookId;
+  if (jobId) {
+    await jobStore.cancelJob(jobId);
+  }
+  if (activeBookId) workspaceStore.setTabWorkspaceJob(activeBookId, 'analysis', null);
+  isAnalysisSubmitting.value = false;
 }
 
 // 角色颜色（与 RoleVoiceMapping 中 getAvatarColor 一致）
@@ -1079,6 +1093,7 @@ onMounted(() => {
           <div class="spinner"></div>
           <p>AI 解析中... {{ currentJob?.progress || 0 }}%</p>
           <span class="mono-text sub-text">完成后会用新的范围标注重建本章</span>
+          <button class="btn btn-outline btn-sm" type="button" @click="stopAnalysis">停止解析</button>
         </div>
       </div>
     </div>

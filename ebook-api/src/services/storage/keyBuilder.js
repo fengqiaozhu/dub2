@@ -14,7 +14,11 @@ function keyFromMediaUrl(url) {
   if (!url) return null;
   const value = String(url);
   if (!value.startsWith('/media/')) return null;
-  return decodeURIComponent(value.slice('/media/'.length).split('?')[0]);
+  try {
+    return decodeURIComponent(value.slice('/media/'.length).split('?')[0]) || null;
+  } catch {
+    return null;
+  }
 }
 
 function bookSourceKey(bookId, originalName) {

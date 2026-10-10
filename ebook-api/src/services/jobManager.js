@@ -5,6 +5,9 @@ const { jobRepository } = require('../repositories');
 
 class JobManager {
   constructor() {
+    // Jobs the user cancelled. Late worker messages must not resurrect a
+    // cancelled job back to RUNNING/DONE/FAILED.
+    this.cancelledJobIds = new Set();
     this.bree = new Bree({
       root: path.join(__dirname, '../jobs'),
       jobs: [],
@@ -12,6 +15,13 @@ class JobManager {
         try {
           const data = msg.message;
           if (!data || !data.type) return;
+
+          if (data.jobId && this.cancelledJobIds.has(data.jobId)) {
+            if (data.type === 'DONE' || data.type === 'ERROR') {
+              this.cancelledJobIds.delete(data.jobId);
+            }
+            return;
+          }
 
           if (data.type === 'PROGRESS') {
             // Update progress
@@ -94,23 +104,61 @@ class JobManager {
       progress: 0
     });
 
-    // 2. Add to bree
-    await this.bree.add({
-      name: jobName,
-      path: path.join(__dirname, '../jobs', scriptName),
-      worker: {
-        workerData: {
-          jobId,
-          jobName,
-          params
+    try {
+      // 2. Add to bree
+      await this.bree.add({
+        name: jobName,
+        path: path.join(__dirname, '../jobs', scriptName),
+        worker: {
+          workerData: {
+            jobId,
+            jobName,
+            params
+          }
         }
-      }
-    });
+      });
 
-    // 3. Start job
-    this.bree.start(jobName);
+      // 3. Start job. Persist launch failures instead of leaving PENDING jobs.
+      await this.bree.start(jobName);
+    } catch (error) {
+      await jobRepository.update(jobId, { status: 'FAILED', error: error.message });
+      try {
+        await this.bree.remove(jobName);
+      } catch {
+        // Registration can fail before Bree knows the job.
+      }
+      throw error;
+    }
 
     return jobId;
+  }
+
+  /**
+   * Cancel a pending or running job. Stops the Bree worker and marks the job
+   * CANCELLED. Terminal jobs are returned unchanged so the call is idempotent.
+   * @param {string} jobId
+   * @returns {Promise<object|null>} the updated job, or null if it does not exist
+   */
+  async cancelJob(jobId) {
+    const job = await jobRepository.findById(jobId);
+    if (!job) return null;
+
+    if (['DONE', 'FAILED', 'CANCELLED'].includes(job.status)) {
+      return job;
+    }
+
+    this.cancelledJobIds.add(jobId);
+
+    try {
+      await this.bree.remove(job.job_name);
+    } catch (error) {
+      // The worker may not be registered yet (launch failed) or already gone.
+      console.warn(`[JobManager] Could not remove job ${job.job_name}:`, error.message);
+    }
+
+    const updated = await jobRepository.update(jobId, { status: 'CANCELLED' });
+    console.log(`[JobManager] Job ${jobId} cancelled.`);
+    return updated;
   }
 }
 

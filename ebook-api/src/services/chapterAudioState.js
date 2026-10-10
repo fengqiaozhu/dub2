@@ -53,7 +53,7 @@ function computeDialogueAudioHash(dialogue, route = {}) {
 
 function resolveAudioStatus(dialogue, sourceHash) {
   if (dialogue.audio_status === 'failed' && dialogue.audio_error) return 'failed';
-  if (!dialogue.audio_url) return 'missing';
+  if (!keyFromMediaUrl(dialogue.audio_url)) return 'missing';
   if (dialogue.audio_source_hash && sourceHash && dialogue.audio_source_hash === sourceHash) return 'current';
   return 'stale';
 }
@@ -146,6 +146,8 @@ function buildChapterAudioItems(chapter, dialogues, taskMap = new Map(), skipRan
 
 function getChapterAudioItems(dialogues) {
   return dialogues
+    .slice()
+    .sort((a, b) => a.char_start - b.char_start || a.char_end - b.char_end)
     .filter((dialogue) => dialogue.audio_url && dialogue.audio_status !== 'failed')
     .map((dialogue) => {
       const objectKey = keyFromMediaUrl(dialogue.audio_url);
@@ -156,6 +158,16 @@ function getChapterAudioItems(dialogues) {
       };
     })
     .filter((item) => Boolean(item.objectKey));
+}
+
+function getChapterExportReadiness(items) {
+  const included = items.filter((item) => item.audio_status !== 'skipped');
+  const counts = { missing: 0, stale: 0, failed: 0 };
+  for (const item of included) {
+    if (Object.hasOwn(counts, item.audio_status)) counts[item.audio_status] += 1;
+  }
+  const pending = included.filter((item) => item.audio_status !== 'current').length;
+  return { ready: included.length > 0 && pending === 0, total: included.length, pending, ...counts };
 }
 
 function computeChapterAudioHash(audioItems) {
@@ -182,6 +194,7 @@ module.exports = {
   rangesOverlap,
   isAudioSkipped,
   getChapterAudioItems,
+  getChapterExportReadiness,
   computeChapterAudioHash,
   normalizeDialogueContent,
   hasSpeakableContent

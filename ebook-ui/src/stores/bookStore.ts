@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import request, { toMediaUrl } from '@/api/request';
+import request, { toMediaUrl, UPLOAD_TIMEOUT } from '@/api/request';
 
 export interface Book {
   id: number;
@@ -133,7 +133,8 @@ export const useBookStore = defineStore('books', {
       formData.append('cover', file);
       try {
         const res = await request.post(`/books/${id}/cover`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: UPLOAD_TIMEOUT
         });
         const coverUrl = (res as any).data?.cover_url;
         const index = this.books.findIndex(b => b.id === id);
