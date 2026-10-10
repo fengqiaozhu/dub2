@@ -1,7 +1,9 @@
 require('dotenv').config();
 
+const { spawnSync } = require('child_process');
 const db = require('../src/repositories/postgres/db');
 const storageService = require('../src/services/storage/storageService');
+const ffmpegBinary = require('../src/services/ffmpegBinary');
 const { storageObjectRepository } = require('../src/repositories');
 const { keyFromMediaUrl } = require('../src/services/storage/keyBuilder');
 
@@ -24,7 +26,29 @@ async function collectReferencedKeys() {
   return keys;
 }
 
+function checkFfmpeg() {
+  const resolved = ffmpegBinary.resolveFfmpegPath();
+  const check = {
+    path: resolved.path,
+    source: resolved.source,
+    version: null,
+    ok: false,
+    error: resolved.error
+  };
+  if (resolved.path) {
+    const probe = spawnSync(resolved.path, ['-version'], { encoding: 'utf8', timeout: 10000 });
+    if (probe.status === 0) {
+      check.ok = true;
+      check.version = String(probe.stdout || '').split('\n')[0] || null;
+    } else {
+      check.error = `ffmpeg ${resolved.path} 无法执行（exit=${probe.status}）${probe.error ? `：${probe.error.message}` : ''}`;
+    }
+  }
+  return check;
+}
+
 (async () => {
+  const ffmpeg = checkFfmpeg();
   const referencedKeys = await collectReferencedKeys();
   const storageRows = await storageObjectRepository.findAll();
   const storageKeys = new Set(storageRows.map((row) => row.object_key));
@@ -38,11 +62,12 @@ async function collectReferencedKeys() {
   }
 
   const result = {
+    ffmpeg,
     referenced: referencedKeys.size,
     storage_records: storageRows.length,
     missing_objects: missing,
     untracked_references: untracked,
-    ok: missing.length === 0 && untracked.length === 0
+    ok: missing.length === 0 && untracked.length === 0 && ffmpeg.ok
   };
 
   console.log(JSON.stringify(result, null, 2));

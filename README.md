@@ -272,7 +272,7 @@ flowchart LR
 | 解析 | epub2、@lingo-reader/mobi-parser |
 | 模型 | OpenAI SDK，指向任意兼容端点 |
 | 语音 | Mosi、Fish Audio 官方、Fish 自建 |
-| 拼接 | ffmpeg-static |
+| 拼接 | ffmpeg-static（缺失时回退 FFMPEG_PATH / 系统 ffmpeg） |
 | 数据 | PostgreSQL 16、S3 兼容对象存储 |
 
 ---
@@ -281,6 +281,7 @@ flowchart LR
 
 - Node.js 20+
 - npm
+- ffmpeg（章节拼接必需：依次使用 `FFMPEG_PATH`、`ffmpeg-static` 附带二进制、系统 PATH 中的 ffmpeg；`npm ci --ignore-scripts` 会跳过 ffmpeg-static 的二进制下载，此时请安装系统 ffmpeg 或设置 `FFMPEG_PATH`）
 - PostgreSQL 16+
 - S3 兼容存储（MinIO、AWS S3、R2、OSS 等）
 - 可选：DeepSeek / OpenAI 兼容 Key、Mosi Key、Fish Audio Key 或自建 Fish 地址

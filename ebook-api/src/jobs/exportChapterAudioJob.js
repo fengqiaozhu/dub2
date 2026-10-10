@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const ffmpegPath = require('ffmpeg-static');
+const ffmpegBinary = require('../services/ffmpegBinary');
 const {
   chapterRepository,
   dialogueRepository,
@@ -23,9 +23,20 @@ const { chapterExportKey, mediaUrlForKey } = require('../services/storage/keyBui
 const { jobId, jobName, params } = workerData;
 const { chapterId } = params;
 
+const registerCancelHandler = require('./cancelSignal');
+const isCancelled = registerCancelHandler();
+
 const escapeConcatPath = (filePath) => filePath.replace(/'/g, "'\\''");
 
-const runFfmpeg = (args) => new Promise((resolve, reject) => {
+const resolveFfmpegOrFail = () => {
+  const resolved = ffmpegBinary.resolveFfmpegPath();
+  if (!resolved.path) {
+    throw new Error(`ffmpeg 不可用，无法拼接章节音频：${resolved.error}`);
+  }
+  return resolved.path;
+};
+
+const runFfmpeg = (ffmpegPath, args) => new Promise((resolve, reject) => {
   const child = spawn(ffmpegPath, args);
   let stderr = '';
 
@@ -74,6 +85,7 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
     if (audioItems.length === 0) {
       throw new Error('No current synthesized audio found for this chapter');
     }
+    const ffmpegPath = resolveFfmpegOrFail();
 
     const sourceHash = computeChapterAudioHash(audioItems);
 
@@ -97,7 +109,7 @@ const runFfmpeg = (args) => new Promise((resolve, reject) => {
 
     parentPort.postMessage({ type: 'PROGRESS', jobId, value: 35 });
 
-    await runFfmpeg([
+    await runFfmpeg(ffmpegPath, [
       '-y',
       '-f', 'concat',
       '-safe', '0',
