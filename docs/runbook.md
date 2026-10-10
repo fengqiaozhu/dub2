@@ -54,7 +54,7 @@ S3_SECRET_ACCESS_KEY=ebook-secret
 S3_REGION=us-east-1
 S3_FORCE_PATH_STYLE=true
 
-# 系统 ffmpeg 二进制路径 (可选，默认使用系统 ffmpeg 或 ffmpeg-static)
+# FFmpeg 二进制路径：跳过安装脚本时必须设置 FFMPEG_BIN 指向真实 ffmpeg；Docker 镜像已经设置。装不上二进制时，导出应失败而不是报成功。
 FFMPEG_BIN=/usr/bin/ffmpeg
 
 # AI / TTS 供应商配置 (可选，按需配置)
@@ -191,7 +191,7 @@ API 服务在端口 `13000` 暴露 `/api/health` 端点，对关键基础设施�
 项目对依赖安装生命周期脚本（如 `postinstall`、`preinstall`）实施严格管控：
 1. **CI 流程**（`.github/workflows/verify.yml`）：使用 `npm ci --ignore-scripts --no-audit --no-fund`，防止依赖安装阶段执行未经审计的外部二进制下载或脚本，保障 CI 执行速度、安全性与幂等性。CI 测试均采用逻辑模拟或 mock，不依赖宿主机器原生 ffmpeg。
 2. **API Dockerfile**（`ebook-api/Dockerfile`）：对齐 CI 策略，使用 `RUN npm ci --ignore-scripts --no-audit --no-fund`。
-3. **FFmpeg 支持**：在 Dockerfile 中通过 Debian 官方软件包源安装可靠的原生 ffmpeg (`apt-get install -y --no-install-recommends ffmpeg`)，并显式注入环境变量 `ENV FFMPEG_BIN=/usr/bin/ffmpeg`。`ffmpeg-static` 在运行时直接识别该环境变量指向系统二进制，无需在 `npm install` 阶段通过不可控脚本从 GitHub Release 动态下载二进制文件。
+3. **FFmpeg 支持**：在 Dockerfile 中通过 Debian 官方软件包源安装可靠的原生 ffmpeg (`apt-get install -y --no-install-recommends ffmpeg`)，并显式注入环境变量 `ENV FFMPEG_BIN=/usr/bin/ffmpeg`。`ffmpeg-static` 在运行时直接识别该环境变量指向系统二进制，无需在 `npm install` 阶段通过不可控脚本从 GitHub Release 动态下载二进制文件。跳过安装脚本时必须设置 `FFMPEG_BIN` 指向真实 ffmpeg；Docker 镜像已经设置。装不上二进制时，导出应失败而不是报成功。
 
 ---
 
