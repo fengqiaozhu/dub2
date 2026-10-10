@@ -6,6 +6,20 @@ interface PollJob {
 
 const TERMINAL_STATUSES = ['DONE', 'FAILED', 'CANCELLED'];
 
+// Decide how the UI must react to a failed cancel request, computed from the
+// error alone so tests can pin it without axios or the pinia store.
+// - Success is handled by the caller (HTTP 2xx never reaches here).
+// - 404 means the job no longer exists: stop local polling safely.
+// - Any other failure (network error, 5xx, timeout): the stop request did NOT
+//   land, so the job must stay visible, polling continues and the user can try
+//   again.
+export function resolveCancelFailure(error: any): { clearLocal: boolean; notice: string } {
+  const status = error?.response?.status;
+  if (status === 404) return { clearLocal: true, notice: '' };
+  const notice = error?.response?.data?.error || '停止任务失败，任务仍在进行，请稍后重试';
+  return { clearLocal: false, notice };
+}
+
 // Schedule after a response so slow requests never overlap.
 export function createJobPoller<T extends PollJob>(options: {
   fetchJob: () => Promise<T>;

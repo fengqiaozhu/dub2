@@ -242,7 +242,11 @@ const stopDubbing = async () => {
   const jobId = workspaceStore.dubbingJobId;
   const bookId = workspaceStore.activeBookId;
   if (!jobId) return;
-  await jobStore.cancelJob(jobId);
+  const { cleared, notice } = await jobStore.cancelJob(jobId);
+  if (!cleared) {
+    showWarning('停止配音失败', notice || '请稍后重试。');
+    return;
+  }
   if (bookId) workspaceStore.setTabWorkspaceJob(bookId, 'dubbing', null);
 };
 
@@ -250,7 +254,11 @@ const stopExport = async () => {
   const jobId = workspaceStore.exportJobId;
   const bookId = workspaceStore.activeBookId;
   if (!jobId) return;
-  await jobStore.cancelJob(jobId);
+  const { cleared, notice } = await jobStore.cancelJob(jobId);
+  if (!cleared) {
+    showWarning('停止拼接失败', notice || '请稍后重试。');
+    return;
+  }
   if (bookId) workspaceStore.setTabWorkspaceJob(bookId, 'export', null);
 };
 

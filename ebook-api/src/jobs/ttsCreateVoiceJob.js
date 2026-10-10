@@ -13,6 +13,9 @@ const {
 
 const { jobId, jobName, params } = workerData;
 
+const registerCancelHandler = require('./cancelSignal');
+const isCancelled = registerCancelHandler();
+
 (async () => {
   try {
     console.log(`[ttsCreateVoiceJob] Start creating ${params.provider || 'mosi'} voice clone for job ${jobId}`);

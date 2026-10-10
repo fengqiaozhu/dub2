@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useJobStore } from '@/stores/jobStore';
-import request, { toMediaUrl } from '@/api/request';
+import request, { toMediaUrl, UPLOAD_TIMEOUT } from '@/api/request';
 import AudioTrack from '@/components/common/AudioTrack.vue';
 import AudioEditorModal from '@/components/common/AudioEditorModal.vue';
 
@@ -851,7 +851,7 @@ async function saveEditedAudio(payload: { blob: Blob; duration: number }) {
     const form = new FormData();
     form.append('audio', payload.blob, `dialogue-${audioEditorItem.value.dialogue_id}-edited.wav`);
     form.append('duration', String(payload.duration));
-    await request.post(`/dialogues/${audioEditorItem.value.dialogue_id}/audio`, form);
+    await request.post(`/dialogues/${audioEditorItem.value.dialogue_id}/audio`, form, { timeout: UPLOAD_TIMEOUT });
     const savedItemId = audioEditorItem.value.id;
     audioEditorItem.value = null;
     activeAudioId.value = null;
@@ -951,7 +951,11 @@ async function stopAnalysis() {
   const jobId = workspaceStore.analysisJobId;
   const activeBookId = workspaceStore.activeBookId;
   if (jobId) {
-    await jobStore.cancelJob(jobId);
+    const { cleared, notice } = await jobStore.cancelJob(jobId);
+    if (!cleared) {
+      errorMessage.value = notice || '停止解析失败，请稍后重试';
+      return;
+    }
   }
   if (activeBookId) workspaceStore.setTabWorkspaceJob(activeBookId, 'analysis', null);
   isAnalysisSubmitting.value = false;

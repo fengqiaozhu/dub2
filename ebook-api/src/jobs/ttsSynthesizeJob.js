@@ -4,6 +4,9 @@ const ttsService = require('../services/tts');
 
 const { jobId, jobName, params } = workerData;
 
+const registerCancelHandler = require('./cancelSignal');
+const isCancelled = registerCancelHandler();
+
 (async () => {
   try {
     console.log(`[ttsSynthesizeJob] Start synthesizing speech for job ${jobId}`);

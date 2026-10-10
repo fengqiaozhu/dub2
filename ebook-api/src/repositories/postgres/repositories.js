@@ -890,6 +890,29 @@ class JobRepository {
     return this.findById(id);
   }
 
+  /**
+   * Write a status/progress patch only while the job has not been cancelled.
+   * The condition lives in the SQL so an in-flight progress/terminal update
+   * that already left the client still cannot overwrite a CANCELLED state that
+   * lands in the database while the update is on the wire; returns the final
+   * state (the caller's patch is silently ignored when cancellation won).
+   */
+  async updateUnlessCancelled(id, updates) {
+    const normalized = { ...updates };
+    if (normalized.result !== undefined && normalized.result !== null && typeof normalized.result !== 'string') {
+      normalized.result = JSON.stringify(normalized.result);
+    }
+    const { fields, values } = buildUpdate(normalized, ['status', 'progress', 'result', 'error']);
+    if (fields.length === 0) return this.findById(id);
+    fields.push('updated_at = NOW()');
+    values.push(id);
+    await db.query(
+      `UPDATE jobs SET ${fields.join(', ')} WHERE id = $${values.length} AND status <> 'CANCELLED'`,
+      values
+    );
+    return this.findById(id);
+  }
+
   async findAll(filters = {}) {
     const conditions = [];
     const values = [];

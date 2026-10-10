@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import request from '@/api/request';
-import { createJobPoller } from './jobPolling';
+import { createJobPoller, resolveCancelFailure } from './jobPolling';
 
 export interface Job {
   id: string;
@@ -55,15 +55,26 @@ export const useJobStore = defineStore('job', {
       this.pollingIntervals.delete(jobId);
     },
 
-    // Ask the server to stop a pending/running job, then stop local polling.
-    // A lost job (404) still stops locally so the UI never hangs on a dead id.
-    async cancelJob(jobId: string) {
+    // Ask the server to stop a pending/running job. Returns true when local
+    // state may be cleared (stop confirmed, or the job no longer exists — 404).
+    // On any other failure the request did not land: keep polling and keep the
+    // job visible so the user can stop it again. The rejection notice is
+    // returned so callers can surface it.
+    async cancelJob(jobId: string): Promise<{ cleared: boolean; notice: string }> {
       try {
         await request.post(`/jobs/${jobId}/cancel`);
-      } catch (err) {
-        console.error('Failed to cancel job:', err);
-      } finally {
         this.stopPolling(jobId);
+        this.activeJobs.delete(jobId);
+        return { cleared: true, notice: '' };
+      } catch (err: any) {
+        const outcome = resolveCancelFailure(err);
+        if (outcome.clearLocal) {
+          this.stopPolling(jobId);
+          this.activeJobs.delete(jobId);
+          return { cleared: true, notice: '' };
+        }
+        console.error('Failed to cancel job:', err);
+        return { cleared: false, notice: outcome.notice };
       }
     },
 

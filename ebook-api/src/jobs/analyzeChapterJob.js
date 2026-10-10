@@ -1,9 +1,12 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 const { parentPort, workerData } = require('worker_threads');
 const aiService = require('../services/aiService');
+const registerCancelHandler = require('./cancelSignal');
 
 const { jobId, jobName, params } = workerData;
 const { chapterId } = params;
+
+const isCancelled = registerCancelHandler();
 
 (async () => {
   try {
