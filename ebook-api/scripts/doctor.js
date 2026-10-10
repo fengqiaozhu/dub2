@@ -12,45 +12,61 @@ const mediaColumns = [
   ['chapter_audio_exports', 'audio_url']
 ];
 
-async function collectReferencedKeys() {
+async function collectReferencedKeys(database = db, parser = keyFromMediaUrl) {
   const keys = new Set();
   for (const [table, column] of mediaColumns) {
-    const rows = await db.many(`SELECT id, ${column} AS url FROM ${table} WHERE ${column} IS NOT NULL`);
+    const rows = await database.many(`SELECT id, ${column} AS url FROM ${table} WHERE ${column} IS NOT NULL`);
     for (const row of rows) {
-      const key = keyFromMediaUrl(row.url);
+      const key = parser(row.url);
       if (key) keys.add(key);
     }
   }
   return keys;
 }
 
-(async () => {
-  const referencedKeys = await collectReferencedKeys();
-  const storageRows = await storageObjectRepository.findAll();
+async function inspectStorageHealth({
+  database = db,
+  storage = storageService,
+  storageRepo = storageObjectRepository,
+  parser = keyFromMediaUrl
+} = {}) {
+  const referencedKeys = await collectReferencedKeys(database, parser);
+  const storageRows = await storageRepo.findAll();
   const storageKeys = new Set(storageRows.map((row) => row.object_key));
   const missing = [];
   const untracked = [];
 
   for (const key of referencedKeys) {
-    const head = await storageService.headObject(key);
+    const head = await storage.headObject(key);
     if (!head) missing.push(key);
     if (!storageKeys.has(key)) untracked.push(key);
   }
 
-  const result = {
+  return {
     referenced: referencedKeys.size,
     storage_records: storageRows.length,
     missing_objects: missing,
     untracked_references: untracked,
     ok: missing.length === 0 && untracked.length === 0
   };
+}
 
-  console.log(JSON.stringify(result, null, 2));
-  process.exit(result.ok ? 0 : 1);
-})().catch(async (error) => {
-  console.error(error);
-  await db.close().catch(() => {});
-  process.exit(1);
-}).finally(async () => {
-  await db.close().catch(() => {});
-});
+if (require.main === module) {
+  (async () => {
+    const result = await inspectStorageHealth();
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(result.ok ? 0 : 1);
+  })().catch(async (error) => {
+    console.error(error);
+    await db.close().catch(() => {});
+    process.exit(1);
+  }).finally(async () => {
+    await db.close().catch(() => {});
+  });
+}
+
+module.exports = {
+  mediaColumns,
+  collectReferencedKeys,
+  inspectStorageHealth
+};
