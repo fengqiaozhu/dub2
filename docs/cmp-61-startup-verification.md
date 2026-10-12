@@ -3,6 +3,7 @@
 - 验证人：丁仪-GROK
 - 基线：`130a88f`（交付）+ `52a7ba3`（文档）
 - 工作分支：`cmp-61/startup-config`（本地，未推送）
+- 配置修复提交：`4d0b709049191e484285d6bd53eb8934eee71c3e`
 - 验证时间：2026-10-12
 - 环境：Node v24.18.1，Docker Compose v5.5.1，系统 ffmpeg 8.1.2；本机 **没有** 监听 5432 的 PostgreSQL，也 **没有** 可用的浏览器 MCP
 
