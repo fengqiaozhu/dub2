@@ -72,7 +72,10 @@ async function verifyMp3Capabilities(ffmpegPath, runFfmpegFn = runFfmpeg) {
 
 // First loudnorm pass: measure the merged WAV. Parses the trailing JSON
 // block (print_format=json) from ffmpeg's stderr.
-async function measureLoudness(ffmpegPath, wavPath, { targetI, targetTP, targetLRA }, runFfmpegFn = runFfmpeg) {
+async function measureLoudness(ffmpegPath, wavPath, loudnessProfile, runFfmpegFn = runFfmpeg) {
+  const targetI = loudnessProfile.integrated_lufs;
+  const targetTP = loudnessProfile.true_peak_dbtp;
+  const targetLRA = loudnessProfile.lra;
   const { stderr } = await runFfmpegFn(ffmpegPath, [
     '-nostdin',
     '-hide_banner',

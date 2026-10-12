@@ -33,6 +33,12 @@ const { resolveExportProfile, EXPORT_PROFILES } = require('../src/services/expor
 
 function preserveEnvironment(t, names) {
   const originals = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  // The dubbing planner must resolve provider configs while arranging audio;
+  // supply a fake key when the host env has none (restored in t.after).
+  if (names.includes('MOSI_API_KEY') && !process.env.MOSI_API_KEY) {
+    process.env.MOSI_API_KEY = 'cmp38-export-test';
+    originals.MOSI_API_KEY = undefined;
+  }
   t.after(() => {
     for (const [name, value] of Object.entries(originals)) {
       if (value === undefined) delete process.env[name];
@@ -141,10 +147,12 @@ async function seedExportScenario({ content, coverAuthor = null, publishYear = n
 }
 
 async function seedCoveredDialogues({ bookId, chapterId, content, segments }) {
+  // `segments` is the segment count (tests pass a number), not an array.
+  const segmentCount = Array.isArray(segments) ? segments.length : Number(segments);
   const chapterCharacter = (await chapterCharacterRepository.findByChapterId(chapterId))[0];
   const keys = [];
-  const boundary = Math.ceil(content.length / segments.length);
-  for (let index = 0; index < segments.length; index += 1) {
+  const boundary = Math.ceil(content.length / segmentCount);
+  for (let index = 0; index < segmentCount; index += 1) {
     const dialogueId = await dialogueRepository.create({
       chapter_character_id: chapterCharacter.id,
       chapter_id: chapterId,
@@ -154,7 +162,7 @@ async function seedCoveredDialogues({ bookId, chapterId, content, segments }) {
       order_index: index,
       source: 'manual'
     });
-    keys.push({ dialogueId, key: dialogueAudioKey(bookId, chapterId, dialogueId, '.wav'), segment: segments[index] });
+    keys.push({ dialogueId, key: dialogueAudioKey(bookId, chapterId, dialogueId, '.wav') });
   }
   return keys;
 }
@@ -251,7 +259,10 @@ dbTest('default export profile delivers MP3 (192k CBR, provisional-spoken-v1 lou
     assert.ok(probe.format.duration && Number(probe.format.duration) > 10, 'delivered duration covers both segments');
 
     const loudness = await runFfmpeg(['-nostdin', '-hide_banner', '-nostats', '-i', mp3Path, '-filter_complex', 'ebur128', '-f', 'null', '-']);
-    const match = loudness.stderr.match(/I:\s*(-?\d+\.?\d*)\s*LUFS/);
+    // ebur128 logs per-interval running stats before the final Summary; only
+    // the last "I:" line is the converged integrated loudness.
+    const matches = [...loudness.stderr.matchAll(/I:\s*(-?\d+\.?\d*)\s*LUFS/g)];
+    const match = matches[matches.length - 1];
     assert.ok(match, `ebur128 summary parsed from ffmpeg output: ${loudness.stderr.slice(-400)}`);
     const integrated = Number(match[1]);
     assert.ok(
@@ -283,12 +294,12 @@ dbTest('EXPORT_PROFILE=wav-legacy still delivers WAV through the historical conc
     const legacyItems = (await dialogueRepository.findByChapterId(chapterId))
       .filter((dialogue) => dialogue.audio_url)
       .sort((a, b) => a.char_start - b.char_start)
-      .map((dialogue) => ({ dialogue, objectKey: dialogue.audio_url.replace(/^\/media\//, '') }));
+      .map((dialogue) => ({ dialogue, objectKey: keyFromMediaUrl(dialogue.audio_url) }));
     assert.equal(record.source_hash, computeChapterSourceHash(legacyItems, EXPORT_PROFILES['wav-legacy']), 'legacy WAV keeps the historical item-list hash');
 
-    const buffer = await storageService.getObjectBuffer(record.audio_url.replace(/^\/media\//, ''));
+    const buffer = await storageService.getObjectBuffer(keyFromMediaUrl(record.audio_url));
     assert.equal(String(buffer.slice(0, 4)), 'RIFF', 'delivered file is WAV/PCM');
-    await storageService.deleteObject(record.audio_url.replace(/^\/media\//, ''));
+    await storageService.deleteObject(keyFromMediaUrl(record.audio_url));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     await bookRepository.delete(bookId);
