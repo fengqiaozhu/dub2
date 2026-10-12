@@ -27,7 +27,9 @@
 
 > [!IMPORTANT]
 > **这份文档描述的是交付分支，不是默认分支。**
-> 适用代码：`cmp-61/startup-config` @ `4d0b709`（完整 SHA `4d0b709049191e484285d6bd53eb8934eee71c3e`），基于交付提交 `130a88f` 与文档提交 `52a7ba3`。
+> 适用代码：`cmp-61/startup-config` @ `44107b9`（完整 SHA `44107b9d40951967afe6fef956b743ad813e08a4`）。
+> 该提交的构成：交付基线 `130a88f`（`cmp-25/section4`）→ 文档基线 `52a7ba3`（`cmp-29/final-sync`）→ 配置修复 `4d0b709` → 独立验证记录 `44107b9`。本文描述的就是 `44107b9` 的状态，不是其中的 `4d0b709`。
+> 本文档自身的修订在 `cmp-62/final-sync` 分支，接在 `44107b9` 之上，只改 README。
 > **该分支目前只在本地，尚未推送到远端**（`main` 同样仍指向 `604bc53`）。想按本文运行请先在本地检出该分支，不要假设远端已有。
 > `main` 仍是升级前的 `604bc53`——在 `main` 上章节默认导出 WAV、没有访问控制，也没有角色档案与读音词典。
 > 本阶段**不合并 main**，这是既定安排，不需要额外审批。若你从 `main` 运行，下文关于 MP3 导出、访问控制、角色档案的描述**都不成立**。
@@ -489,6 +491,8 @@ dub 是**单操作者**工具。访问控制是共享密钥级别，不是账号
 | `<audio>` / `<img>` 等媒体 URL | `toMediaUrl` 附加 `?access_token=<token>` |
 | 本地 Vite `VITE_DUB_ACCESS_TOKEN` | 仅当 localStorage 为空时回退；Docker UI **不**烘焙此值 |
 
+令牌没填或填错时，顶栏会出现红色提示条「API 拒绝了未认证请求……」，并给出「去填写令牌」链接直达 `/settings?tab=access`。令牌只存在这一台浏览器的 `localStorage` 里，换浏览器或清缓存后需要重填。
+
 ```bash
 curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/books
 ```
@@ -525,7 +529,7 @@ curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/boo
 | 症状 | 原因 | 处理 |
 | --- | --- | --- |
 | API 反复重启，日志 `Refusing to start: DUB_ACCESS_TOKEN is not set` | 访问控制两项都没配 | 按 `.env.example` 设置 `DUB_ACCESS_TOKEN` 或 `DUB_AUTH_MODE=disabled` |
-| 界面能开但书籍列表 401 | API 已启用令牌，浏览器未填写 | 系统设置 → 访问令牌，填入与 `.env` 相同的值 |
+| 界面能开但书籍列表 401，顶栏出现红色提示条 | API 已启用令牌，浏览器未填写或填错 | 点提示条里的「去填写令牌」，或到 系统设置 → 访问令牌 填入与 `.env` 相同的值 |
 | 章节导出失败，提示找不到 ffmpeg | 三档都没解析到 | 见上 |
 | `FFMPEG_PATH=... 指向的文件不存在或不可执行` | 显式指定的路径不可用 | 修正路径或改用系统 ffmpeg |
 | 需要退回 WAV 交付 | 兼容性或工具链问题 | `EXPORT_PROFILE=wav-legacy` |
@@ -533,7 +537,7 @@ curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/boo
 
 ### 启动配置的验证状态
 
-下面的「已验证」是**实际执行**过的结果，不是推断。哪些没做、为什么没做，一并写明：
+下面的「已验证」是**实际执行**过的结果，不是推断。哪些没做、为什么没做，一并写明。原始验证记录（含命令与环境信息）见 [`docs/cmp-61-startup-verification.md`](docs/cmp-61-startup-verification.md)：
 
 | 行为 | 验证方式 | 是否实际执行 | 结论 |
 | --- | --- | --- | --- |
