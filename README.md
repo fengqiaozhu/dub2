@@ -25,6 +25,13 @@
   <sub>工作台：章节、句级音轨、角色绑定、增量配音与章节拼接，全部发生在同一块画布上。</sub>
 </p>
 
+> [!IMPORTANT]
+> **这份文档描述的是交付分支，不是默认分支。**
+> 适用代码：`cmp-25/section4` 分支，提交 `130a88f`。
+> 本文档自身的修订在 `cmp-29/final-sync` 分支。
+> `main` 仍是升级前的 `604bc53`——在 `main` 上章节默认导出 WAV、没有访问控制，也没有角色档案与读音词典。
+> 本阶段**不合并 main**，这是既定安排，不需要额外审批。若你从 `main` 运行，下文关于 MP3 导出、访问控制、角色档案的描述**都不成立**。
+
 ---
 
 ## 它解决什么
@@ -184,6 +191,35 @@
 
 克隆前会检查样本是否完整（有音频、文本够长、授权已确认），避免把半成品推到远端训练。
 
+### 角色与读音词典
+
+工作台左侧 **VOICES** 里，每个角色一行都写着「档案 · 别名 N · 规则 M」。点开就能管理这个角色的规范档案、别名与读音规则。
+
+**角色档案（已实现）**
+
+每个角色对应一条规范档案，记录规范名与首次出场章节。同一个角色在不同章节被写成不同叫法时，用别名把它们归到同一档案下：
+
+| 操作 | 入口 |
+| --- | --- |
+| 查看档案与别名 | 工作台 VOICES → 展开角色 |
+| 新增 / 删除别名 | 同上，档案面板内 |
+| 接口 | `GET /api/books/{id}/character-profiles`、`POST /api/books/{id}/character-profiles/{profileId}/aliases`、`DELETE /api/books/{id}/aliases/{aliasId}` |
+
+`alias` 规则会**替换送给 TTS 的朗读文本**：同一角色的别名在合成时被统一成规范名，跨章不再各念各的。
+
+**读音规则（两类必须分清）**
+
+| 规则类型 | 是否生效 |
+| --- | --- |
+| `alias` | **生效**。替换朗读文本 |
+| `phoneme` | **不生效**。可保存，但 Mosi、Fish Audio、Fish Audio 自建都不支持 phoneme 标注，replacement 不会进入请求文本 |
+
+新增规则前可以先看影响面：工作台会显示这条规则会影响本章多少句；规划阶段若命中无法执行的 phoneme 规则，会给出 `phoneme_skipped` 警告并继续。
+
+**档案不等于全书一致性。** 档案提供的是稳定身份与别名关联。系统**不会**自动保证同一角色在全书所有章节的音色、情绪与读法一致——那需要你逐章检查。
+
+接口：`GET/POST /api/books/{id}/pronunciation-rules`、`POST /api/books/{id}/pronunciation-rules/preview-impact`。
+
 ### 4. 系统配置 — 模型与 TTS 插槽
 
 <p align="center">
@@ -311,7 +347,7 @@ flowchart LR
 
 - Node.js 20+
 - npm
-- ffmpeg（章节拼接必需：依次使用 `FFMPEG_PATH`、`ffmpeg-static` 附带二进制、系统 PATH 中的 ffmpeg；`npm ci --ignore-scripts` 会跳过 ffmpeg-static 的二进制下载，此时请安装系统 ffmpeg 或设置 `FFMPEG_PATH`）
+- ffmpeg（章节拼接必需，解析顺序见下方[回退与排错](#回退与排错)）
 - PostgreSQL 16+
 - S3 兼容存储（MinIO、AWS S3、R2、OSS 等）
 - 可选：DeepSeek / OpenAI 兼容 Key、Mosi Key、Fish Audio Key 或自建 Fish 地址
@@ -319,6 +355,18 @@ flowchart LR
 ---
 
 ## 用 Docker 启动
+
+API 现在**必须**先决定访问控制方式，两项都不设会直接拒绝启动（见[访问控制](#访问控制)）。先在仓库根目录写一个 `.env`：
+
+```bash
+# 方式一：启用共享密钥（推荐）
+echo "DUB_ACCESS_TOKEN=$(openssl rand -hex 24)" >> .env
+
+# 方式二：明确关闭鉴权，仅限本机试用
+# echo "DUB_AUTH_MODE=disabled" >> .env
+```
+
+然后启动：
 
 ```bash
 docker compose up --build
@@ -332,11 +380,19 @@ docker compose up --build
 | API | http://localhost:13000 |
 | MinIO Console | http://localhost:9001 |
 
-健康检查会同时探测 API、PostgreSQL 与对象存储：
+健康检查会同时探测 API、PostgreSQL 与对象存储，**且不需要令牌**（`/api/health` 是唯一的公开路径）：
 
 ```bash
 curl http://localhost:13000/api/health
 ```
+
+其余接口需要带上令牌：
+
+```bash
+curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/books
+```
+
+**回退**：如果 API 反复重启并打印 `Refusing to start: DUB_ACCESS_TOKEN is not set`，就是上面两项都没配。补上 `.env` 后重新 `docker compose up -d` 即可，无需重建镜像。
 
 ---
 
@@ -347,6 +403,8 @@ curl http://localhost:13000/api/health
 ```bash
 cd ebook-api
 cp .env.example .env
+# .env.example 不含下面几个必填/常用项，请手动追加，否则 npm start 会拒绝启动
+printf '\nDUB_ACCESS_TOKEN=%s\n' "$(openssl rand -hex 24)" >> .env
 npm install
 npm run schema:init
 npm start
@@ -355,6 +413,16 @@ npm start
 关键环境变量：
 
 ```dotenv
+# 访问控制：两者必填其一，否则 API 拒绝启动
+DUB_ACCESS_TOKEN=
+# DUB_AUTH_MODE=disabled
+
+# 章节导出档位：留空 = mp3-192k；填 wav-legacy 产出 WAV
+EXPORT_PROFILE=
+
+# ffmpeg：显式指定时若不可用会直接报错，不会静默回退
+FFMPEG_PATH=
+
 PORT=13000
 DATABASE_URL=postgres://ebook:ebook@localhost:5432/ebook
 S3_ENDPOINT=http://localhost:9000
@@ -363,10 +431,6 @@ S3_BUCKET=ebook
 S3_ACCESS_KEY_ID=ebook
 S3_SECRET_ACCESS_KEY=ebook-secret
 S3_FORCE_PATH_STYLE=true
-
-DUB_ACCESS_TOKEN=
-DUB_AUTH_MODE=
-EXPORT_PROFILE=
 
 OPEN_AI_API_KEY=
 OPEN_AI_API_URL=https://api.deepseek.com
@@ -379,6 +443,8 @@ FISH_API_KEY=
 FISH_DEFAULT_MODEL=s2.1-pro
 FISH_SELF_HOSTED_BASE_URL=http://localhost:8080
 ```
+
+> `.env.example` 目前**不含** `DUB_ACCESS_TOKEN` / `DUB_AUTH_MODE` / `EXPORT_PROFILE` / `FFMPEG_PATH` / `DUB_CORS_ORIGIN`。复制之后需要自己补上前两个，否则 `npm start` 会打印 `Refusing to start` 并退出。
 
 另一个终端启动界面。Vite 会把 `/api` 与 `/media` 代理到 API：
 
@@ -421,6 +487,30 @@ curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/boo
 | `EXPORT_PROFILE=wav-legacy` | `pcm_s16le` / 44.1 kHz 立体声 WAV，不做响度归一 |
 
 档位只影响章节拼接产物的封装与响度处理，不影响单句合成。
+
+**回退**：把 `EXPORT_PROFILE=wav-legacy` 写进 `.env` 后重启 API 即可，**不需要重建数据库、不需要重跑配音**，已生成的 MP3 也不受影响——每次导出按当前档位重新合成。
+
+---
+
+## 回退与排错
+
+**ffmpeg 解析顺序**（`resolveFfmpegPath`）：
+
+1. `FFMPEG_PATH` —— 显式指定。**注意：一旦设置，若指向的文件不存在或不可执行就直接报错，不做静默回退。**
+2. `ffmpeg-static` 附带的二进制 —— `npm ci --ignore-scripts` 会跳过它的 postinstall 下载，此时这一档会解析失败。
+3. 系统 `PATH` 中的 ffmpeg。
+
+三个来源都拿不到时，章节导出会失败并给出提示，**不会把「没合成」报成成功**。修复方式：装系统 ffmpeg、执行 `npm rebuild ffmpeg-static`（或改用保留 postinstall 的 `npm ci`）、或设置 `FFMPEG_PATH`。
+
+`npm run doctor` 的 `ok` 结果里包含 `ffmpeg.ok`，启动前排查可以先跑它。
+
+| 症状 | 原因 | 处理 |
+| --- | --- | --- |
+| API 反复重启，日志 `Refusing to start: DUB_ACCESS_TOKEN is not set` | 访问控制两项都没配 | 设置 `DUB_ACCESS_TOKEN` 或 `DUB_AUTH_MODE=disabled` |
+| 章节导出失败，提示找不到 ffmpeg | 三档都没解析到 | 见上 |
+| `FFMPEG_PATH=... 指向的文件不存在或不可执行` | 显式指定的路径不可用 | 修正路径或改用系统 ffmpeg |
+| 需要退回 WAV 交付 | 兼容性或工具链问题 | `EXPORT_PROFILE=wav-legacy` |
+| 需要退回升级前行为 | 交付分支与 `main` 行为不同 | 切回 `main`（`604bc53`），此时无 MP3、无访问控制、无角色档案 |
 
 ---
 
@@ -474,8 +564,9 @@ npm run doctor
 - **访问控制是单操作者级别**：已实现共享密钥校验（`DUB_ACCESS_TOKEN`，见[访问控制](#访问控制)），但**没有多用户、没有账号体系、没有按资源授权**。令牌泄露即全站失守，轮换需要重启。
 - **密钥静态加密**：数据库中的供应商 `api_key` 仍是明文。
 - **音频交付**：无 AAC、无整书合并、无逐章多格式可选。
-- **发音词典**：`phoneme` 规则可以保存，但**不会**送进 Mosi、Fish Audio 或自建服务的请求文本——这三家都不支持 phoneme 标注，只有 `alias` 规则会替换朗读文本。规划器会在跳过时给出警告。
-- **跨章角色身份与全书一致性**：角色别名已可用，但没有角色档案与全书级一致性保证。
+- **角色档案**：已实现规范角色档案与别名关联，管理入口见[角色与读音词典](#角色与读音词典)。
+- **全书一致性**：**不做任何自动全书一致性保证**。角色档案提供的是稳定身份与别名关联，不是「同一角色在全书自动对齐音色与读法」的承诺；跨章仍需你逐章检查。
+- **发音词典**：**只有 `alias` 规则可执行**——它会替换送给 TTS 的朗读文本。`phoneme` 规则可以保存，但 Mosi、Fish Audio、Fish Audio 自建都不支持 phoneme 标注，**其 replacement 永远不会出现在请求文本中**；规划器会在跳过时给出 `phoneme_skipped` 警告。不要把 phoneme 当作可用的读音控制手段。
 - **成本可见性**：不提供费用预估。
 - **PDF**：没有排期，也不支持。
 
