@@ -28,6 +28,7 @@
 > [!IMPORTANT]
 > **这份文档描述的是交付分支，不是默认分支。**
 > 适用代码：`cmp-61/startup-config` @ `4d0b709`（完整 SHA `4d0b709049191e484285d6bd53eb8934eee71c3e`），基于交付提交 `130a88f` 与文档提交 `52a7ba3`。
+> **该分支目前只在本地，尚未推送到远端**（`main` 同样仍指向 `604bc53`）。想按本文运行请先在本地检出该分支，不要假设远端已有。
 > `main` 仍是升级前的 `604bc53`——在 `main` 上章节默认导出 WAV、没有访问控制，也没有角色档案与读音词典。
 > 本阶段**不合并 main**，这是既定安排，不需要额外审批。若你从 `main` 运行，下文关于 MP3 导出、访问控制、角色档案的描述**都不成立**。
 
@@ -530,6 +531,24 @@ curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/boo
 | 需要退回 WAV 交付 | 兼容性或工具链问题 | `EXPORT_PROFILE=wav-legacy` |
 | 需要退回升级前行为 | 交付分支与 `main` 行为不同 | 切回 `main`（`604bc53`），此时无 MP3、无访问控制、无角色档案 |
 
+### 启动配置的验证状态
+
+下面的「已验证」是**实际执行**过的结果，不是推断。哪些没做、为什么没做，一并写明：
+
+| 行为 | 验证方式 | 是否实际执行 | 结论 |
+| --- | --- | --- | --- |
+| 未配置时拒绝启动 | `resolveAuthConfig({})` + 真实 `node index.js` | **已执行** | 退出码 1，`Refusing to start: DUB_ACCESS_TOKEN is not set…`。失败发生在数据库初始化之前 |
+| 令牌模式 | `resolveAuthConfig`、`createApp` HTTP、真实 `index.js` + 令牌 | **已执行** | 启用鉴权；`/api/health` 免令牌；`/api/books` 无令牌 401；Bearer 与 `?access_token=` 均可通过 |
+| 显式关闭鉴权 | `resolveAuthConfig({DUB_AUTH_MODE:disabled})`、`createApp` HTTP | **已执行** | `enabled:false`；`/api/books` 不再 401 |
+| 非法 `FFMPEG_PATH` | `resolveFfmpegPath({FFMPEG_PATH: missing})` | **已执行** | `path=null`、`source=FFMPEG_PATH`，不回退到其它二进制 |
+| compose 插值 | `docker compose config`（空值 / 令牌 / `wav-legacy` / 非法路径 / `disabled`） | **已执行** | 原样透传；**未**改成 disabled，**未**植入固定令牌 |
+| 全栈 `docker compose up --build` | 镜像构建 + MinIO/Postgres 拉起 | **未执行** | 环境限制：验证机没有监听 5432 的 PostgreSQL。compose 插值已由 `docker compose config` 证明 |
+| 浏览器里点选保存令牌并刷新列表 | 人工点选 | **未执行** | 环境限制：无浏览器 MCP，且未起全栈 UI。UI 令牌存取与 401 分支有自动化测试覆盖 |
+
+**未验证的完整启动路径**：以上四类行为都验到了「进程与鉴权层」这一级，但**没有**跑通「镜像构建 → 全栈起来 → 浏览器实际使用」这条完整链路。首次部署请预留排错时间。
+
+自动化：`cmp61-startup-config` + `auth` + `ffmpegBinary` 24 项通过，UI `accessToken` 4 项通过。
+
 ---
 
 ## 备份与恢复
@@ -572,6 +591,8 @@ npm run doctor
 - 未调用任何付费 AI / TTS 服务。真实供应商响应、合成音质、延迟与计费行为均未经端到端验证。
 - 未做浏览器端到端回归，也未验证生产数据规模下的表现。
 - 未做主观听感评估。响度只有 `ebur128` 的仪器读数，**不能**据此声称成品听起来合格。
+- **未跑通完整启动链路**：验证机没有本地 PostgreSQL，也没有浏览器 MCP，因此没有执行过「`docker compose up --build` 起全栈 + 浏览器实际使用」。鉴权四类行为在进程与鉴权层已实际验证（见[回退与排错](#回退与排错)），但镜像构建、MinIO/Postgres 拉起、浏览器点选令牌这条完整路径**未被证明**。
+- 界面未在真实浏览器里人工点选验证过，令牌存取与 401 分支只有自动化测试覆盖。
 
 **已经过独立测试的部分**
 
