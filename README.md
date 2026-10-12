@@ -27,8 +27,7 @@
 
 > [!IMPORTANT]
 > **这份文档描述的是交付分支，不是默认分支。**
-> 适用代码：`cmp-25/section4` 分支，提交 `130a88f`。
-> 本文档自身的修订在 `cmp-29/final-sync` 分支。
+> 适用代码：`cmp-61/startup-config`，基于交付提交 `130a88f` 与文档提交 `52a7ba3`。
 > `main` 仍是升级前的 `604bc53`——在 `main` 上章节默认导出 WAV、没有访问控制，也没有角色档案与读音词典。
 > 本阶段**不合并 main**，这是既定安排，不需要额外审批。若你从 `main` 运行，下文关于 MP3 导出、访问控制、角色档案的描述**都不成立**。
 
@@ -356,15 +355,20 @@ flowchart LR
 
 ## 用 Docker 启动
 
-API 现在**必须**先决定访问控制方式，两项都不设会直接拒绝启动（见[访问控制](#访问控制)）。先在仓库根目录写一个 `.env`：
+API **必须**先决定访问控制方式，两项都不设会直接拒绝启动（见[访问控制](#访问控制)）。这是安全默认，不是漏配。先从示例生成仓库根目录 `.env`：
 
 ```bash
+cp .env.example .env
+
 # 方式一：启用共享密钥（推荐）
-echo "DUB_ACCESS_TOKEN=$(openssl rand -hex 24)" >> .env
+# 编辑 .env，把 DUB_ACCESS_TOKEN= 改成你自己生成的值：
+#   openssl rand -hex 24
 
 # 方式二：明确关闭鉴权，仅限本机试用
-# echo "DUB_AUTH_MODE=disabled" >> .env
+# 在 .env 里取消注释 DUB_AUTH_MODE=disabled
 ```
+
+不要把示例改成默认关闭鉴权，也不要提交真实令牌或植入固定共享密钥。`docker-compose.yml` 会把你在 `.env` 里填写的 `DUB_ACCESS_TOKEN`、`DUB_AUTH_MODE`、`EXPORT_PROFILE`、`FFMPEG_PATH` 原样传给 API；空值也原样传递，因此未填写时启动失败并给出配置指引。
 
 然后启动：
 
@@ -392,7 +396,9 @@ curl http://localhost:13000/api/health
 curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/books
 ```
 
-**回退**：如果 API 反复重启并打印 `Refusing to start: DUB_ACCESS_TOKEN is not set`，就是上面两项都没配。补上 `.env` 后重新 `docker compose up -d` 即可，无需重建镜像。
+界面不会从 Docker 镜像读取令牌。打开 http://localhost:13001 ，到 **系统设置 → 访问令牌** 填入与 `.env` 中相同的值。浏览器把它写进 `localStorage`（键 `dub_access_token`），之后 API 请求带 `Authorization: Bearer`，媒体地址带 `?access_token=`。
+
+**回退**：如果 API 反复重启并打印 `Refusing to start: DUB_ACCESS_TOKEN is not set`，就是上面两项都没配。按 `.env.example` 的注释补上后重新 `docker compose up -d` 即可，无需重建镜像。
 
 ---
 
@@ -403,12 +409,13 @@ curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/boo
 ```bash
 cd ebook-api
 cp .env.example .env
-# .env.example 不含下面几个必填/常用项，请手动追加，否则 npm start 会拒绝启动
-printf '\nDUB_ACCESS_TOKEN=%s\n' "$(openssl rand -hex 24)" >> .env
+# 编辑 .env：填写 DUB_ACCESS_TOKEN，或取消注释 DUB_AUTH_MODE=disabled
 npm install
 npm run schema:init
 npm start
 ```
+
+`ebook-api/.env.example` 已列出 `DUB_ACCESS_TOKEN`、`DUB_AUTH_MODE`、`EXPORT_PROFILE`、`FFMPEG_PATH`、`DUB_CORS_ORIGIN` 及其安全含义。复制后若两项访问控制都留空，`npm start` 会打印 `Refusing to start` 并退出。
 
 关键环境变量：
 
@@ -444,15 +451,16 @@ FISH_DEFAULT_MODEL=s2.1-pro
 FISH_SELF_HOSTED_BASE_URL=http://localhost:8080
 ```
 
-> `.env.example` 目前**不含** `DUB_ACCESS_TOKEN` / `DUB_AUTH_MODE` / `EXPORT_PROFILE` / `FFMPEG_PATH` / `DUB_CORS_ORIGIN`。复制之后需要自己补上前两个，否则 `npm start` 会打印 `Refusing to start` 并退出。
-
 另一个终端启动界面。Vite 会把 `/api` 与 `/media` 代理到 API：
 
 ```bash
 cd ebook-ui
+cp .env.example .env   # 可选：VITE_DUB_ACCESS_TOKEN 仅作本地回退
 npm install
 npm run dev
 ```
+
+更稳妥的做法是启动后到 **系统设置 → 访问令牌** 填写，与 API 的 `DUB_ACCESS_TOKEN` 保持一致。
 
 模型与 TTS 也可以不写在 `.env` 里，启动后到 **系统设置** 里添加并激活。环境变量只在数据库还没有激活配置时作为回退。
 
@@ -470,6 +478,15 @@ dub 是**单操作者**工具。访问控制是共享密钥级别，不是账号
 | `DUB_AUTH_MODE=disabled` | 显式关闭鉴权。启动日志会打印警告，`/api/*` 与 `/media/*` 对任何能连上的人开放 |
 
 令牌也可以用查询参数传：`?access_token=<token>`（`<audio>`、`<img>` 等无法带请求头的场景需要它）。
+
+界面路径与 API 一致：
+
+| 位置 | 行为 |
+| --- | --- |
+| 系统设置 → 访问令牌 | 写入浏览器 `localStorage` 键 `dub_access_token` |
+| Axios / `fetch` | `Authorization: Bearer <token>` |
+| `<audio>` / `<img>` 等媒体 URL | `toMediaUrl` 附加 `?access_token=<token>` |
+| 本地 Vite `VITE_DUB_ACCESS_TOKEN` | 仅当 localStorage 为空时回退；Docker UI **不**烘焙此值 |
 
 ```bash
 curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/books
@@ -506,7 +523,8 @@ curl -H "Authorization: Bearer $DUB_ACCESS_TOKEN" http://localhost:13000/api/boo
 
 | 症状 | 原因 | 处理 |
 | --- | --- | --- |
-| API 反复重启，日志 `Refusing to start: DUB_ACCESS_TOKEN is not set` | 访问控制两项都没配 | 设置 `DUB_ACCESS_TOKEN` 或 `DUB_AUTH_MODE=disabled` |
+| API 反复重启，日志 `Refusing to start: DUB_ACCESS_TOKEN is not set` | 访问控制两项都没配 | 按 `.env.example` 设置 `DUB_ACCESS_TOKEN` 或 `DUB_AUTH_MODE=disabled` |
+| 界面能开但书籍列表 401 | API 已启用令牌，浏览器未填写 | 系统设置 → 访问令牌，填入与 `.env` 相同的值 |
 | 章节导出失败，提示找不到 ffmpeg | 三档都没解析到 | 见上 |
 | `FFMPEG_PATH=... 指向的文件不存在或不可执行` | 显式指定的路径不可用 | 修正路径或改用系统 ffmpeg |
 | 需要退回 WAV 交付 | 兼容性或工具链问题 | `EXPORT_PROFILE=wav-legacy` |

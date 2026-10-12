@@ -1,4 +1,12 @@
 import axios from 'axios';
+import {
+  ACCESS_TOKEN_STORAGE_KEY,
+  accessAuthState,
+  clearAccessToken as clearStoredAccessToken,
+  envAccessToken,
+  readAccessToken,
+  writeAccessToken
+} from './accessToken';
 
 // Default short timeout for ordinary JSON calls (job status, settings, lists).
 export const DEFAULT_TIMEOUT = 10000;
@@ -9,17 +17,28 @@ export const UPLOAD_TIMEOUT = 120000;
 // the default short budget on large chapters.
 export const ANALYSIS_TIMEOUT = 60000;
 
-export const ACCESS_TOKEN_STORAGE_KEY = 'dub_access_token';
+export { ACCESS_TOKEN_STORAGE_KEY, accessAuthState };
+
+function viteEnvToken(): string {
+  try {
+    return envAccessToken(import.meta.env as { VITE_DUB_ACCESS_TOKEN?: string });
+  } catch {
+    return '';
+  }
+}
 
 export function getAccessToken(): string {
-  try {
-    const stored = localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
-    if (stored) return stored;
-  } catch (error) {
-    console.warn('Cannot read stored access token:', error);
-  }
-  const envToken = import.meta.env.VITE_DUB_ACCESS_TOKEN as string | undefined;
-  return envToken || '';
+  return readAccessToken(undefined, viteEnvToken());
+}
+
+export function setAccessToken(token: string): string {
+  const saved = writeAccessToken(token);
+  if (saved) accessAuthState.unauthorized = false;
+  return saved;
+}
+
+export function clearAccessToken(): void {
+  clearStoredAccessToken();
 }
 
 export function authHeaders(): Record<string, string> {
@@ -49,10 +68,15 @@ request.interceptors.request.use((config) => {
 
 request.interceptors.response.use(
   (response) => {
+    accessAuthState.unauthorized = false;
     return response.data;
   },
   (error) => {
-    console.error('API Error:', error);
+    if (error?.response?.status === 401) {
+      accessAuthState.unauthorized = true;
+    } else {
+      console.error('API Error:', error);
+    }
     return Promise.reject(error);
   }
 );

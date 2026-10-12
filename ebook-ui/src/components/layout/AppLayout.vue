@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import Sidebar from './Sidebar.vue';
 import Header from './Header.vue';
+import AccessTokenBanner from './AccessTokenBanner.vue';
 </script>
 
 <template>
   <div class="layout-wrapper">
     <Sidebar />
     <div class="main-container">
+      <AccessTokenBanner />
       <Header />
       <main class="content-area">
         <slot></slot>
