@@ -12,6 +12,7 @@ const {
   normalizeDialogueContent,
   hasSpeakableContent
 } = require('../chapterAudioState');
+const pronunciationService = require('./pronunciationService');
 const providerRegistry = require('./providerRegistry');
 const providerConfigService = require('./providerConfigService');
 
@@ -95,7 +96,22 @@ function buildEmotionWarnings(tasks) {
   }));
 }
 
-async function getDubbingRoles(chapterId, skipRanges = []) {
+function buildPhonemeWarnings(rules, tasks) {
+  if (!rules || rules.length === 0) return [];
+  const texts = tasks.map((task) => task.text).filter(Boolean);
+  const skipped = rules.filter((rule) => texts.some((text) => text.includes(rule.match_text)));
+  if (skipped.length === 0) return [];
+  return [{
+    type: 'phoneme_skipped',
+    provider: null,
+    dialogue_count: skipped.length,
+    rule_count: skipped.length,
+    roles: [],
+    message: `本章 ${skipped.length} 条 phoneme 词典规则已跳过：当前供应商（Mosi、Fish Audio、Fish Audio 自建）不支持 phoneme 标注，其 replacement 不会出现在请求文本中。`
+  }];
+}
+
+async function getDubbingRoles(chapterId, skipRanges = [], aliasMap = null) {
   const roles = new Set(['旁白']);
   const dialogues = await dialogueRepository.findByChapterId(chapterId);
   for (const dialogue of dialogues) {
@@ -105,7 +121,9 @@ async function getDubbingRoles(chapterId, skipRanges = []) {
       dialogue.source !== 'narrator' &&
       !isAudioSkipped(dialogue, skipRanges)
     ) {
-      roles.add(dialogue.character_name);
+      roles.add(aliasMap
+        ? pronunciationService.resolveCanonicalName(dialogue.character_name, aliasMap)
+        : dialogue.character_name);
     }
   }
   return Array.from(roles);
@@ -140,7 +158,16 @@ async function createPlan(chapterId, options = {}) {
     ));
   const bindings = await characterVoiceBindingRepository.findByBookId(chapter.book_id);
   const bindingMap = new Map(bindings.map((binding) => [binding.character_name, binding]));
-  const roles = await getDubbingRoles(chapterId, skipRanges);
+  const aliasMap = await pronunciationService.buildAliasMap(chapter.book_id);
+  const canonicalByAliasBind = new Map();
+  for (const [name, entry] of aliasMap.entries()) {
+    const list = canonicalByAliasBind.get(entry.canonicalName) || [];
+    list.push(name);
+    canonicalByAliasBind.set(entry.canonicalName, list);
+  }
+  const roles = await getDubbingRoles(chapterId, skipRanges, aliasMap);
+  const aliasRules = await pronunciationService.loadEnabledRules(chapter.book_id);
+  const phonemeRules = await pronunciationService.loadEnabledPhonemeRules(chapter.book_id);
   const providerConfigCache = new Map();
 
   const getActiveProviderConfig = async (provider) => {
@@ -151,7 +178,11 @@ async function createPlan(chapterId, options = {}) {
   };
 
   const rolePlans = await Promise.all(roles.map(async (characterName) => {
-    const binding = bindingMap.get(characterName);
+    const binding = bindingMap.get(characterName)
+      || [...(canonicalByAliasBind.get(characterName) || [])] // alias names grouped under this canonical
+        .map((aliasName) => bindingMap.get(aliasName))
+        .find(Boolean)
+      || null;
     if (!binding) {
       return {
         character_name: characterName,
@@ -200,24 +231,31 @@ async function createPlan(chapterId, options = {}) {
   const blockedDialogues = [];
 
   for (const dialogue of dialogues) {
-    const rolePlan = rolePlanMap.get(dialogue.character_name);
+    const rawCharacterName = String(dialogue.character_name ?? '');
+    const canonicalCharacterName = pronunciationService.resolveCanonicalName(rawCharacterName, aliasMap);
+    const rawRolePlan = rolePlanMap.get(rawCharacterName);
+    const rolePlan = rolePlanMap.get(canonicalCharacterName) || rawRolePlan;
     if (!rolePlan?.ready) {
       blockedDialogues.push({
         dialogueId: dialogue.id,
         characterName: dialogue.character_name,
         text: dialogue.content,
-        status: rolePlan?.status || 'missing_binding',
-        message: rolePlan?.message || '未绑定音色'
+        status: (rawRolePlan ?? rolePlan)?.status || 'missing_binding',
+        message: (rawRolePlan ?? rolePlan)?.message || '未绑定音色'
       });
       continue;
     }
 
     const intent = mergeTaskIntent(rolePlan.intent, dialogue);
-    const text = normalizeDialogueContent(dialogue.content);
+    const baseText = normalizeDialogueContent(dialogue.content);
+    const aliasEntry = aliasMap.get(rawCharacterName);
+    const { text: spokenText, applied } = pronunciationService.applyAliasRules(baseText, aliasRules, aliasEntry?.profileId ?? null);
     const task = {
       dialogueId: dialogue.id,
-      characterName: dialogue.character_name,
-      text,
+      characterName: canonicalCharacterName,
+      rawCharacterName,
+      text: spokenText,
+      spoken_rule_ids: applied.map((item) => item.rule_id),
       provider: rolePlan.route.provider,
       voiceId: rolePlan.route.provider_voice_id,
       providerVoiceId: rolePlan.route.provider_voice_id,
@@ -227,6 +265,7 @@ async function createPlan(chapterId, options = {}) {
       orderIndex: dialogue.segment_index ?? dialogue.order_index,
       charStart: dialogue.char_start
     };
+    if (spokenText !== baseText) task.spokenText = spokenText;
     task.sourceHash = computeDialogueAudioHash(dialogue, task);
     if (!needsDubbing(dialogue, task.sourceHash, options)) continue;
     tasks.push(task);
@@ -245,7 +284,7 @@ async function createPlan(chapterId, options = {}) {
     tasks,
     blocked_dialogues: blockedDialogues,
     provider_summary: buildProviderSummary(tasks),
-    warnings: buildEmotionWarnings(tasks),
+    warnings: buildEmotionWarnings(tasks).concat(buildPhonemeWarnings(phonemeRules, tasks)),
     stats: {
       roles_total: rolePlans.length,
       roles_ready: rolePlans.length - blockingRoles.length,
@@ -258,5 +297,7 @@ async function createPlan(chapterId, options = {}) {
 }
 
 module.exports = {
-  createPlan
+  createPlan,
+  needsDubbing,
+  buildPhonemeWarnings
 };

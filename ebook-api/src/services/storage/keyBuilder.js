@@ -33,8 +33,8 @@ function dialogueAudioKey(bookId, chapterId, dialogueId, ext = '.wav') {
   return `books/${bookId}/chapters/${chapterId}/dialogues/${dialogueId}-${randomUUID()}${cleanExt(ext, '.wav')}`;
 }
 
-function chapterExportKey(bookId, chapterId) {
-  return `books/${bookId}/chapters/${chapterId}/exports/${randomUUID()}.wav`;
+function chapterExportKey(bookId, chapterId, ext = '.wav') {
+  return `books/${bookId}/chapters/${chapterId}/exports/${randomUUID()}${cleanExt(ext, '.wav')}`;
 }
 
 function voiceSampleKey(voiceProfileId, originalName) {

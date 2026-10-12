@@ -30,4 +30,15 @@ router.get('/:id/voice-usage', characterController.getVoiceUsage);
 router.put('/:bookId/voice-bindings/:character', characterController.upsertVoiceBinding);
 router.delete('/:bookId/voice-bindings/:character', characterController.deleteVoiceBinding);
 
+// Character profiles / aliases / pronunciation rules
+router.get('/:id/character-profiles', characterController.getCharacterProfiles);
+router.post('/:id/character-profiles/:profileId/aliases', characterController.addAlias);
+router.delete('/:id/aliases/:aliasId', characterController.deleteAlias);
+router.post('/:id/pronunciation-rules/preview-impact', characterController.previewPronunciationRuleImpact);
+router.get('/:id/pronunciation-rules', characterController.getPronunciationRules);
+router.post('/:id/pronunciation-rules', characterController.createPronunciationRule);
+router.patch('/:id/pronunciation-rules/:ruleId', characterController.updatePronunciationRule);
+router.delete('/:id/pronunciation-rules/:ruleId', characterController.deletePronunciationRule);
+router.get('/:id/pronunciation-rules/:ruleId/impact', characterController.getPronunciationRuleImpact);
+
 module.exports = router;

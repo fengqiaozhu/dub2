@@ -20,8 +20,10 @@ const {
   buildNarratorRanges,
   getChapterAudioItems,
   getChapterExportReadiness,
-  computeChapterAudioHash
+  computeChapterAudioHash,
+  computeChapterSourceHash
 } = require('../services/chapterAudioState');
+const { resolveExportProfile } = require('../services/exportProfile');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
 const { createStorySourcePackage } = require('../services/storySourcePackageService');
 
@@ -126,7 +128,7 @@ class ChapterController {
       const audioItems = getChapterAudioItems(refreshedDialogues.filter((dialogue) => currentDialogueIds.has(String(dialogue.id))));
       const exportRecord = await chapterAudioExportRepository.findLatestByChapterId(id);
       if (exportRecord) {
-        const currentHash = computeChapterAudioHash(audioItems);
+        const currentHash = computeChapterSourceHash(audioItems, resolveExportProfile(process.env));
         chapter.merged_audio_export = {
           ...exportRecord,
           is_current: chapter.export_readiness.ready && exportRecord.source_hash === currentHash,
