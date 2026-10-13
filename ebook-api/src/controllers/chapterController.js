@@ -19,8 +19,11 @@ const {
   buildChapterAudioItems,
   buildNarratorRanges,
   getChapterAudioItems,
-  computeChapterAudioHash
+  getChapterExportReadiness,
+  computeChapterAudioHash,
+  computeChapterSourceHash
 } = require('../services/chapterAudioState');
+const { resolveExportProfile } = require('../services/exportProfile');
 const dubbingPlanner = require('../services/tts/dubbingPlanner');
 const { createStorySourcePackage } = require('../services/storySourcePackageService');
 
@@ -97,10 +100,13 @@ class ChapterController {
       try {
         plan = await dubbingPlanner.createPlan(id, { includeCompleted: true });
       } catch (planError) {
-        console.warn(`[ChapterController] Failed to build audio state for chapter ${id}:`, planError.message);
+        console.error(`[ChapterController] Failed to build audio state for chapter ${id}:`, planError);
+        return res.status(500).json({ error: 'internal_error' });
       }
       const taskMap = new Map((plan.tasks || []).map((task) => [String(task.dialogueId), task]));
       chapter.audio_items = buildChapterAudioItems(chapter, refreshedDialogues, taskMap, skipRanges);
+
+      chapter.export_readiness = getChapterExportReadiness(chapter.audio_items);
 
       const totalAudioTargets = chapter.audio_items.length;
       const completedAudioTargets = chapter.audio_items.filter((item) => item.audio_status === 'current').length;
@@ -122,10 +128,10 @@ class ChapterController {
       const audioItems = getChapterAudioItems(refreshedDialogues.filter((dialogue) => currentDialogueIds.has(String(dialogue.id))));
       const exportRecord = await chapterAudioExportRepository.findLatestByChapterId(id);
       if (exportRecord) {
-        const currentHash = computeChapterAudioHash(audioItems);
+        const currentHash = computeChapterSourceHash(audioItems, resolveExportProfile(process.env));
         chapter.merged_audio_export = {
           ...exportRecord,
-          is_current: exportRecord.source_hash === currentHash,
+          is_current: chapter.export_readiness.ready && exportRecord.source_hash === currentHash,
           current_source_hash: currentHash
         };
       } else {
@@ -134,7 +140,8 @@ class ChapterController {
 
       res.json({ data: chapter });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      console.error('[ChapterController] Failed to load chapter:', error);
+      res.status(500).json({ error: 'internal_error' });
     }
   }
 

@@ -1,0 +1,47 @@
+name: Verify
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ebook-api
+    # Dependencies are installed with --ignore-scripts --no-audit --no-fund to guarantee:
+    # 1. Security: Prevents execution of arbitrary package lifecycle scripts during install.
+    # 2. Determinism & Performance: Avoids dynamic prebuilt binary downloads (e.g. ffmpeg-static)
+    #    over the network during CI runs.
+    # 3. Test isolation: CI verification relies on pure unit/integration mocks and syntax checks,
+    #    without requiring native ffmpeg binaries.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ebook-api/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm test
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ebook-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ebook-ui/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run build

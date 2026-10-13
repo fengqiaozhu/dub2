@@ -14,7 +14,11 @@ function keyFromMediaUrl(url) {
   if (!url) return null;
   const value = String(url);
   if (!value.startsWith('/media/')) return null;
-  return decodeURIComponent(value.slice('/media/'.length).split('?')[0]);
+  try {
+    return decodeURIComponent(value.slice('/media/'.length).split('?')[0]) || null;
+  } catch {
+    return null;
+  }
 }
 
 function bookSourceKey(bookId, originalName) {
@@ -29,8 +33,8 @@ function dialogueAudioKey(bookId, chapterId, dialogueId, ext = '.wav') {
   return `books/${bookId}/chapters/${chapterId}/dialogues/${dialogueId}-${randomUUID()}${cleanExt(ext, '.wav')}`;
 }
 
-function chapterExportKey(bookId, chapterId) {
-  return `books/${bookId}/chapters/${chapterId}/exports/${randomUUID()}.wav`;
+function chapterExportKey(bookId, chapterId, ext = '.wav') {
+  return `books/${bookId}/chapters/${chapterId}/exports/${randomUUID()}${cleanExt(ext, '.wav')}`;
 }
 
 function voiceSampleKey(voiceProfileId, originalName) {

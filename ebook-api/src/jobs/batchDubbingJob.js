@@ -12,6 +12,9 @@ const { dialogueAudioKey } = require('../services/storage/keyBuilder');
 const { jobId, jobName, params } = workerData;
 const { chapterId, items, force = false } = params;
 
+const registerCancelHandler = require('./cancelSignal');
+const isCancelled = registerCancelHandler();
+
 (async () => {
   try {
     console.log(`[batchDubbingJob] Start batch dubbing for job ${jobId}, chapter: ${chapterId}`);
@@ -122,6 +125,9 @@ const { chapterId, items, force = false } = params;
       result: { dubbed: dubbedCount, skipped: skippedCount, errors: errorCount, total }
     });
 
+    // Bree removes a finished worker itself when it receives this signal.
+    parentPort.postMessage('done');
+
   } catch (error) {
     console.error(`[batchDubbingJob] Fatal error:`, error);
     parentPort.postMessage({
@@ -130,5 +136,6 @@ const { chapterId, items, force = false } = params;
       jobName,
       error: error.message
     });
+    parentPort.postMessage('done');
   }
 })();

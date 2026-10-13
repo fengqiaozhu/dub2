@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import type { CharacterProfile, PronunciationRule } from '@/stores/workspaceStore';
 import VoicePickerModal from './VoicePickerModal.vue';
 
 const workspaceStore = useWorkspaceStore();
@@ -14,6 +15,9 @@ const pickerTargetRole = ref('');
 
 onMounted(() => {
   workspaceStore.fetchVoices();
+  if (workspaceStore.activeBookId) {
+    workspaceStore.fetchCharacterProfiles(workspaceStore.activeBookId);
+  }
 });
 
 const bookCharacters = computed(() => workspaceStore.bookCharacters);
@@ -57,6 +61,138 @@ const removeVoiceBinding = async (characterName: string) => {
     await workspaceStore.deleteVoiceBinding(characterName);
   } finally {
     isDeleting.value[characterName] = false;
+  }
+};
+
+// ==================== 角色档案 / 别名 / 读音规则 ====================
+
+const expandedRole = ref<string | null>(null);
+const profileBusy = ref<Record<string | number, boolean>>({});
+const profileImpactsLoading = ref<Record<string | number, boolean>>({});
+const aliasText = ref<Record<string | number, string>>({});
+const panelError = ref<Record<string | number, string>>({});
+const ruleBusy = ref<Record<string | number, boolean>>({});
+const ruleForms = ref<Record<string | number, { type: 'alias' | 'phoneme'; match: string; replacement: string }>>({});
+
+const profiles = computed(() => workspaceStore.characterProfiles as CharacterProfile[]);
+
+const profileFor = (name: string): CharacterProfile | null =>
+  profiles.value.find((p) => p.canonical_name === name) || null;
+
+const profileRules = (profileId: number | string): PronunciationRule[] =>
+  workspaceStore.pronunciationRules.filter(
+    (rule) => String(rule.profile_id) === String(profileId) || Number(rule.profile_id) === Number(profileId)
+  );
+
+const profileRuleCount = (characterName: string): number => {
+  const profile = profileFor(characterName);
+  return profile ? profileRules(profile.id).length : 0;
+};
+
+const panelsFor = (characterName: string): CharacterProfile[] => {
+  const profile = profileFor(characterName);
+  return profile ? [profile] : [];
+};
+
+const profileImpactText = (profile: CharacterProfile) => {
+  if (profileImpactsLoading.value[profile.id]) return '统计中…';
+  if (profile.impact) return `影响 ${profile.impact.dialogue_count} 句 / ${profile.impact.chapter_count} 章`;
+  return '';
+};
+
+// 展开档案面板：懒加载影响面与读音规则
+const toggleProfile = async (characterName: string) => {
+  if (expandedRole.value === characterName) {
+    expandedRole.value = null;
+    return;
+  }
+  const profile = profileFor(characterName);
+  if (!profile) return;
+  expandedRole.value = characterName;
+  const bookId = workspaceStore.activeBookId;
+  if (!bookId) return;
+  if (!profile.impact && !profileImpactsLoading.value[profile.id]) {
+    profileImpactsLoading.value[profile.id] = true;
+    try {
+      await workspaceStore.fetchProfileImpact(bookId, profile.id);
+    } finally {
+      profileImpactsLoading.value[profile.id] = false;
+    }
+  }
+  await workspaceStore.ensurePronunciationRules();
+};
+
+const addAlias = async (profile: CharacterProfile) => {
+  const bookId = workspaceStore.activeBookId;
+  if (!bookId) return;
+  const value = (aliasText.value[profile.id] || '').trim();
+  if (!value) return;
+  profileBusy.value[profile.id] = true;
+  panelError.value[profile.id] = '';
+  try {
+    await workspaceStore.addCharacterAlias(bookId, profile.id, value);
+    aliasText.value[profile.id] = '';
+  } catch (err: any) {
+    panelError.value[profile.id] = err?.message || '新增别名失败';
+  } finally {
+    profileBusy.value[profile.id] = false;
+  }
+};
+
+const removeAlias = async (profile: CharacterProfile, aliasId: number | string) => {
+  const bookId = workspaceStore.activeBookId;
+  if (!bookId) return;
+  profileBusy.value[profile.id] = true;
+  panelError.value[profile.id] = '';
+  try {
+    await workspaceStore.deleteCharacterAlias(bookId, profile.id, aliasId);
+  } catch (err) {
+    panelError.value[profile.id] = '删除别名失败';
+  } finally {
+    profileBusy.value[profile.id] = false;
+  }
+};
+
+const getRuleForm = (profileId: number | string) => {
+  if (!ruleForms.value[profileId]) {
+    ruleForms.value[profileId] = { type: 'alias', match: '', replacement: '' };
+  }
+  return ruleForms.value[profileId];
+};
+
+const saveRule = async (profile: CharacterProfile) => {
+  const bookId = workspaceStore.activeBookId;
+  if (!bookId) return;
+  const form = getRuleForm(profile.id);
+  const matchText = (form.match || '').trim();
+  if (!matchText) return;
+  ruleBusy.value[profile.id] = true;
+  panelError.value[profile.id] = '';
+  try {
+    await workspaceStore.createPronunciationRule(bookId, {
+      profile_id: profile.id,
+      rule_type: form.type,
+      match_text: matchText,
+      replacement: (form.replacement || '').trim()
+    });
+    ruleForms.value[profile.id] = { type: form.type, match: '', replacement: '' };
+  } catch (err: any) {
+    panelError.value[profile.id] = err?.message || '新增规则失败';
+  } finally {
+    ruleBusy.value[profile.id] = false;
+  }
+};
+
+const toggleRule = async (rule: PronunciationRule) => {
+  const bookId = workspaceStore.activeBookId;
+  if (!bookId) return;
+  ruleBusy.value[rule.id] = true;
+  try {
+    await workspaceStore.setPronunciationRuleEnabled(bookId, rule.id, !rule.enabled);
+  } catch (err) {
+    console.error('Failed to toggle rule:', err);
+  } finally {
+    ruleBusy.value[rule.id] = false;
   }
 };
 
@@ -146,6 +282,99 @@ const getAvatarColor = (name: string) => {
             </svg>
             {{ isSaving[char.character_name] ? '保存中…' : '选择音色' }}
           </button>
+        </div>
+
+        <!-- 档案 / 别名 / 读音规则 -->
+        <div class="profile-block" v-if="profileFor(char.character_name)">
+          <button
+            type="button"
+            class="profile-toggle mono-text"
+            @click="toggleProfile(char.character_name)"
+          >
+            <span class="chev">{{ expandedRole === char.character_name ? '▾' : '▸' }}</span>
+            档案 · 别名 {{ profileFor(char.character_name)?.aliases?.length || 0 }} · 规则 {{ profileRuleCount(char.character_name) }}
+          </button>
+          <div class="profile-panel" v-if="expandedRole === char.character_name">
+            <div class="profile-panel-inner" v-for="item in panelsFor(char.character_name)" :key="'profile-' + item.id">
+              <div class="panel-error mono-text" v-if="panelError[item.id]">{{ panelError[item.id] }}</div>
+              <div class="impact-line mono-text" v-if="profileImpactText(item)">{{ profileImpactText(item) }}</div>
+
+              <div class="alias-row">
+                <span class="alias-chip" v-for="alias in item.aliases" :key="alias.id">
+                  {{ alias.alias }}
+                  <button
+                    type="button"
+                    class="alias-delete"
+                    @click="removeAlias(item, alias.id)"
+                    :disabled="profileBusy[item.id]"
+                    title="删除别名"
+                  >×</button>
+                </span>
+                <span class="alias-empty mono-text" v-if="!item.aliases?.length">暂无别名</span>
+              </div>
+
+              <div class="alias-add">
+                <input
+                  class="alias-input"
+                  v-model="aliasText[item.id]"
+                  placeholder="新增别名"
+                  @keyup.enter="addAlias(item)"
+                />
+                <button
+                  type="button"
+                  class="alias-add-btn mono-text"
+                  @click="addAlias(item)"
+                  :disabled="profileBusy[item.id]"
+                >{{ profileBusy[item.id] ? '…' : '添加' }}</button>
+              </div>
+
+              <div class="rules-block">
+                <div class="section-label mono-text">读音规则</div>
+                <div class="rule-item" v-for="rule in profileRules(item.id)" :key="rule.id" :class="{ disabled: !rule.enabled }">
+                  <button
+                    type="button"
+                    class="rule-state mono-text"
+                    :class="{ off: !rule.enabled }"
+                    @click="toggleRule(rule)"
+                    :disabled="ruleBusy[rule.id]"
+                    :title="rule.enabled ? '停用规则' : '启用规则'"
+                  >{{ rule.enabled ? '启用' : '停用' }}</button>
+                  <span class="rule-type mono-text" :class="{ phoneme: rule.rule_type === 'phoneme' }">{{ rule.rule_type }}</span>
+                  <span class="rule-text">{{ rule.match_text }} → {{ rule.replacement || '（原文）' }}</span>
+                  <span class="rule-impact mono-text">影响 {{ rule.impact ? rule.impact.dialogue_count : '…' }} 句</span>
+                </div>
+                <div class="rule-empty mono-text" v-if="!profileRules(item.id).length">该角色暂无规则</div>
+
+                <div class="rule-create">
+                  <select v-model="getRuleForm(item.id).type" class="rule-select mono-text">
+                    <option value="alias">alias</option>
+                    <option value="phoneme">phoneme（仅保存，当前供应商不发送）</option>
+                  </select>
+                  <input
+                    class="rule-input"
+                    v-model="getRuleForm(item.id).match"
+                    placeholder="匹配文本"
+                    @keyup.enter="saveRule(item)"
+                  />
+                  <input
+                    class="rule-input"
+                    v-model="getRuleForm(item.id).replacement"
+                    placeholder="替换为（可选）"
+                    @keyup.enter="saveRule(item)"
+                  />
+                  <button
+                    type="button"
+                    class="rule-save mono-text"
+                    @click="saveRule(item)"
+                    :disabled="ruleBusy[item.id]"
+                  >{{ ruleBusy[item.id] ? '保存中…' : '保存规则' }}</button>
+                </div>
+                <p class="phoneme-hint mono-text" v-if="getRuleForm(item.id).type === 'phoneme'">
+                  phoneme 规则仅保存，当前供应商不会发送。
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -419,6 +648,300 @@ const getAvatarColor = (name: string) => {
 .pick-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ── 档案 / 别名 / 读音规则 ───────────────── */
+.profile-block {
+  border-top: 1px dashed var(--border-color);
+  padding-top: var(--space-2);
+}
+
+.profile-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  text-align: left;
+}
+
+.profile-toggle:hover {
+  color: var(--accent-cyan);
+}
+
+.chev {
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.profile-panel {
+  margin-top: var(--space-2);
+  background-color: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.panel-error {
+  font-size: 10px;
+  color: #ef4444;
+}
+
+.impact-line {
+  font-size: 10px;
+  color: var(--accent-cyan);
+}
+
+.alias-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.alias-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px 1px 6px;
+}
+
+.alias-delete {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.alias-delete:hover:not(:disabled) {
+  color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.15);
+}
+
+.alias-delete:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.alias-empty {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.alias-add {
+  display: flex;
+  gap: 4px;
+}
+
+.alias-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+}
+
+.alias-input:focus {
+  border-color: var(--border-focus);
+}
+
+.alias-add-btn {
+  height: 22px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid rgba(0, 212, 170, 0.35);
+  border-radius: var(--radius-sm);
+  color: var(--accent-cyan);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.alias-add-btn:hover:not(:disabled) {
+  background-color: rgba(0, 212, 170, 0.12);
+}
+
+.alias-add-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.section-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.rules-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.rule-item.disabled .rule-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.rule-state {
+  flex-shrink: 0;
+  width: 34px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid rgba(0, 212, 170, 0.35);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.rule-state.off {
+  border-color: var(--border-color);
+  color: var(--text-muted);
+}
+
+.rule-state:hover:not(:disabled) {
+  background-color: rgba(0, 212, 170, 0.12);
+}
+
+.rule-state:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rule-type {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+.rule-type.phoneme {
+  background-color: rgba(139, 92, 246, 0.18);
+  color: #a78bfa;
+}
+
+.rule-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.rule-impact {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.rule-empty {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.rule-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.rule-select {
+  height: 22px;
+  padding: 0 4px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 10px;
+  outline: none;
+  flex-shrink: 0;
+}
+
+.rule-input {
+  flex: 1;
+  min-width: 5em;
+  height: 22px;
+  padding: 0 6px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+}
+
+.rule-input:focus, .rule-select:focus {
+  border-color: var(--border-focus);
+}
+
+.rule-save {
+  height: 22px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid rgba(0, 212, 170, 0.35);
+  border-radius: var(--radius-sm);
+  color: var(--accent-cyan);
+  font-size: 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.rule-save:hover:not(:disabled) {
+  background-color: rgba(0, 212, 170, 0.12);
+}
+
+.rule-save:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.phoneme-hint {
+  margin: 0;
+  font-size: 9px;
+  color: #a78bfa;
 }
 
 /* ── 空状态 ───────────────────────────────── */

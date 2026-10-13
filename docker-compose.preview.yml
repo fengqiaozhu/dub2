@@ -1,0 +1,13 @@
+# Debug preview override. The public path is Cloudflare Tunnel to
+# 127.0.0.1:13001. Database, object storage, and the API stay on the
+# compose network only. Do not publish 5432, 9000, 9001, or 13000.
+services:
+  postgres:
+    ports: !reset []
+  minio:
+    ports: !reset []
+  api:
+    ports: !reset []
+  ui:
+    ports: !override
+      - "127.0.0.1:13001:80"

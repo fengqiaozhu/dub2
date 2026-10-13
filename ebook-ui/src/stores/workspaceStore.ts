@@ -40,6 +40,42 @@ interface BookCharacter {
   binding_mode?: 'provider_voice' | 'voice_profile' | null;
 }
 
+export interface CharacterAlias {
+  id: number | string;
+  profile_id: number | string;
+  book_id: number | string;
+  alias: string;
+}
+
+export interface RuleImpact {
+  dialogue_ids: number[];
+  chapter_ids: number[];
+  dialogue_count: number;
+  chapter_count: number;
+}
+
+export interface CharacterProfile {
+  id: number | string;
+  book_id: number | string;
+  canonical_name: string;
+  first_chapter_id?: number | string | null;
+  aliases: CharacterAlias[];
+  voice_change_aliases: string[];
+  impact?: RuleImpact | null;
+}
+
+export interface PronunciationRule {
+  id: number | string;
+  book_id: number | string;
+  profile_id: number | string | null;
+  rule_type: 'alias' | 'phoneme';
+  match_text: string;
+  replacement: string;
+  priority: number;
+  enabled: boolean;
+  impact?: RuleImpact | null;
+}
+
 export interface WorkspaceTab {
   bookId: string;
   title: string;
@@ -56,6 +92,9 @@ interface WorkspaceContext {
   chapterContent: any | null;
   bookCharacters: BookCharacter[];
   voiceBindings: Record<string, VoiceBinding>;
+  characterProfiles: CharacterProfile[];
+  pronunciationRules: PronunciationRule[];
+  pronunciationRulesLoaded: boolean;
 }
 
 const STORAGE_KEY = 'voiceforge.workspace.tabs.v1';
@@ -76,6 +115,9 @@ const createContext = (): WorkspaceContext => ({
   chapterContent: null,
   bookCharacters: [],
   voiceBindings: {},
+  characterProfiles: [],
+  pronunciationRules: [],
+  pronunciationRulesLoaded: false,
 });
 
 const normalizeBookId = (bookId: string | number) => String(bookId);
@@ -129,6 +171,18 @@ export const useWorkspaceStore = defineStore('workspace', {
 
     voiceBindings(): Record<string, VoiceBinding> {
       return this.activeContext?.voiceBindings || {};
+    },
+
+    characterProfiles(): CharacterProfile[] {
+      return this.activeContext?.characterProfiles || [];
+    },
+
+    pronunciationRules(): PronunciationRule[] {
+      return this.activeContext?.pronunciationRules || [];
+    },
+
+    pronunciationRulesLoaded(): boolean {
+      return this.activeContext?.pronunciationRulesLoaded || false;
     },
 
     highlightedRole(): string | null {
@@ -361,6 +415,7 @@ export const useWorkspaceStore = defineStore('workspace', {
       await Promise.all([
         this.fetchVoiceBindings(id),
         this.fetchBookCharacters(id),
+        this.fetchCharacterProfiles(id),
       ]);
       this.persistTabs();
       return context.bookDetails;
@@ -569,6 +624,154 @@ export const useWorkspaceStore = defineStore('workspace', {
         }
       } catch (err) {
         console.error('Failed to delete voice binding:', err);
+        throw err;
+      }
+    },
+
+    // ==================== 角色档案 / 别名 / 读音规则 ====================
+
+    async fetchCharacterProfiles(bookId?: string | number) {
+      const id = bookId ? normalizeBookId(bookId) : this.activeBookId;
+      if (!id) return;
+      const context = this.ensureContext(id);
+      try {
+        const res = await request.get(`/books/${id}/character-profiles`);
+        context.characterProfiles = res.data || [];
+      } catch (err) {
+        console.error('Failed to fetch character profiles:', err);
+        context.characterProfiles = [];
+      }
+    },
+
+    // 首次展开规则区时懒加载规则（含影响统计）
+    async fetchPronunciationRules(bookId?: string | number) {
+      const id = bookId ? normalizeBookId(bookId) : this.activeBookId;
+      if (!id) return;
+      const context = this.ensureContext(id);
+      try {
+        const res = await request.get(`/books/${id}/pronunciation-rules`);
+        context.pronunciationRules = res.data || [];
+        context.pronunciationRulesLoaded = true;
+      } catch (err) {
+        console.error('Failed to fetch pronunciation rules:', err);
+      }
+    },
+
+    async ensurePronunciationRules() {
+      const id = this.activeBookId;
+      if (!id) return;
+      const context = this.ensureContext(id);
+      if (context.pronunciationRulesLoaded) return;
+      await this.fetchPronunciationRules(id);
+    },
+
+    // 只读影响面：某档案当前影响的对白/章数量
+    async fetchProfileImpact(bookId: string | number, profileId: number | string) {
+      const id = normalizeBookId(bookId);
+      const context = this.ensureContext(id);
+      try {
+        const res = await request.post(`/books/${id}/pronunciation-rules/preview-impact`, {
+          profile_id: Number(profileId)
+        });
+        const profile = context.characterProfiles.find(
+          (p) => String(p.id) === String(profileId) || Number(p.id) === Number(profileId)
+        );
+        if (profile) {
+          profile.impact = res.data || null;
+          context.characterProfiles = [...context.characterProfiles];
+        }
+        return res.data;
+      } catch (err) {
+        console.error('Failed to fetch profile impact:', err);
+        return null;
+      }
+    },
+
+    async addCharacterAlias(bookId: string | number, profileId: number | string, alias: string) {
+      const id = normalizeBookId(bookId);
+      const context = this.ensureContext(id);
+      try {
+        const res = await request.post(
+          `/books/${id}/character-profiles/${encodeURIComponent(profileId)}/aliases`,
+          { alias }
+        );
+        const profile = context.characterProfiles.find(
+          (p) => String(p.id) === String(profileId) || Number(p.id) === Number(profileId)
+        );
+        if (profile) {
+          profile.aliases = [...(profile.aliases || []), res.data];
+          profile.impact = res.data?.impact ?? profile.impact ?? null;
+          context.characterProfiles = [...context.characterProfiles];
+        }
+        return res.data as CharacterAlias & { impact: RuleImpact };
+      } catch (err: any) {
+        throw new Error(err?.response?.data?.error || '新增别名失败');
+      }
+    },
+
+    async deleteCharacterAlias(bookId: string | number, profileId: number | string, aliasId: number | string) {
+      const id = normalizeBookId(bookId);
+      const context = this.ensureContext(id);
+      try {
+        await request.delete(`/books/${id}/aliases/${encodeURIComponent(aliasId)}`);
+        const profile = context.characterProfiles.find(
+          (p) => String(p.id) === String(profileId) || Number(p.id) === Number(profileId)
+        );
+        if (profile) {
+          profile.aliases = (profile.aliases || []).filter(
+            (a) => String(a.id) !== String(aliasId) && Number(a.id) !== Number(aliasId)
+          );
+          context.characterProfiles = [...context.characterProfiles];
+          // 删除后重算该档案的影响面
+          await this.fetchProfileImpact(id, profileId);
+        }
+      } catch (err) {
+        console.error('Failed to delete alias:', err);
+        throw err;
+      }
+    },
+
+    async createPronunciationRule(bookId: string | number, payload: {
+      profile_id: number | string;
+      rule_type: 'alias' | 'phoneme';
+      match_text: string;
+      replacement?: string;
+      priority?: number;
+    }) {
+      const id = normalizeBookId(bookId);
+      const context = this.ensureContext(id);
+      try {
+        const res = await request.post(`/books/${id}/pronunciation-rules`, {
+          profile_id: Number(payload.profile_id),
+          rule_type: payload.rule_type,
+          match_text: payload.match_text,
+          replacement: payload.replacement ?? '',
+          priority: payload.priority ?? 0
+        });
+        context.pronunciationRules = [...context.pronunciationRules, res.data];
+        return res.data as PronunciationRule;
+      } catch (err: any) {
+        throw new Error(err?.response?.data?.error || '新增规则失败');
+      }
+    },
+
+    // 停用/启用规则（停用即不再参与朗读文本或音色计算）
+    async setPronunciationRuleEnabled(bookId: string | number, ruleId: number | string, enabled: boolean) {
+      const id = normalizeBookId(bookId);
+      const context = this.ensureContext(id);
+      try {
+        await request.patch(`/books/${id}/pronunciation-rules/${encodeURIComponent(ruleId)}`, { enabled });
+        const rule = context.pronunciationRules.find(
+          (r) => String(r.id) === String(ruleId) || Number(r.id) === Number(ruleId)
+        );
+        if (rule) {
+          rule.enabled = enabled;
+          const res = await request.get(`/books/${id}/pronunciation-rules/${encodeURIComponent(ruleId)}/impact`);
+          rule.impact = res.data || null;
+          context.pronunciationRules = [...context.pronunciationRules];
+        }
+      } catch (err) {
+        console.error('Failed to update pronunciation rule:', err);
         throw err;
       }
     },

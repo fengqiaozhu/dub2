@@ -196,6 +196,54 @@ CREATE INDEX IF NOT EXISTS idx_chapter_characters_book_id ON chapter_characters(
 CREATE INDEX IF NOT EXISTS idx_provider_voices_profile_id ON provider_voices(voice_profile_id);
 CREATE INDEX IF NOT EXISTS idx_storage_objects_entity ON storage_objects(entity_type, entity_id);
 
+CREATE TABLE IF NOT EXISTS book_character_profiles (
+  id BIGSERIAL PRIMARY KEY,
+  book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  canonical_name TEXT NOT NULL,
+  first_chapter_id BIGINT REFERENCES chapters(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (book_id, canonical_name)
+);
+
+CREATE TABLE IF NOT EXISTS book_character_aliases (
+  id BIGSERIAL PRIMARY KEY,
+  profile_id BIGINT NOT NULL REFERENCES book_character_profiles(id) ON DELETE CASCADE,
+  book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  alias TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (book_id, alias)
+);
+
+CREATE TABLE IF NOT EXISTS pronunciation_rules (
+  id BIGSERIAL PRIMARY KEY,
+  book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  profile_id BIGINT REFERENCES book_character_profiles(id) ON DELETE CASCADE,
+  rule_type TEXT NOT NULL DEFAULT 'alias',
+  match_text TEXT NOT NULL,
+  replacement TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 0,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_book_character_aliases_profile_id ON book_character_aliases(profile_id);
+CREATE INDEX IF NOT EXISTS idx_pronunciation_rules_book_id ON pronunciation_rules(book_id, enabled);
+
+-- Repeatable backfill: one profile + a same-name alias per existing
+-- book_characters.character_name. Safe to run again (no duplicate rows).
+INSERT INTO book_character_profiles (book_id, canonical_name)
+SELECT DISTINCT bc.book_id, bc.character_name
+FROM book_characters bc
+ON CONFLICT (book_id, canonical_name) DO NOTHING;
+
+INSERT INTO book_character_aliases (book_id, profile_id, alias)
+SELECT p.book_id, p.id, bc.character_name
+FROM book_characters bc
+JOIN book_character_profiles p ON p.book_id = bc.book_id AND p.canonical_name = bc.character_name
+ON CONFLICT (book_id, alias) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS system_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -269,7 +317,30 @@ async function initSchema() {
   await db.query(schemaSql);
 }
 
+// Repeatable per-book backfill: one profile + a same-name alias per existing
+// book_characters.character_name. Safe to run again (no duplicate rows).
+async function backfillCharacterProfiles(bookId) {
+  await db.query(
+    `INSERT INTO book_character_profiles (book_id, canonical_name)
+     SELECT DISTINCT bc.book_id, bc.character_name
+     FROM book_characters bc
+     WHERE bc.book_id = $1
+     ON CONFLICT (book_id, canonical_name) DO NOTHING`,
+    [bookId]
+  );
+  await db.query(
+    `INSERT INTO book_character_aliases (book_id, profile_id, alias)
+     SELECT p.book_id, p.id, bc.character_name
+     FROM book_characters bc
+     JOIN book_character_profiles p ON p.book_id = bc.book_id AND p.canonical_name = bc.character_name
+     WHERE bc.book_id = $1
+     ON CONFLICT (book_id, alias) DO NOTHING`,
+    [bookId]
+  );
+}
+
 module.exports = {
   initSchema,
+  backfillCharacterProfiles,
   schemaSql
 };

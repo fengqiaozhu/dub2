@@ -5,6 +5,9 @@ const ttsService = require('../services/tts');
 const { jobId, jobName, params } = workerData;
 const { text, voice_id, options, intent, performance, output } = params;
 
+const registerCancelHandler = require('./cancelSignal');
+const isCancelled = registerCancelHandler();
+
 (async () => {
   try {
     console.log(`[mosiSynthesizeJob] Start synthesizing speech for job ${jobId}`);

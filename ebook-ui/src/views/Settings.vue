@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue';
-import request from '@/api/request';
+import { useRoute } from 'vue-router';
+import request, { clearAccessToken, getAccessToken, setAccessToken } from '@/api/request';
 
 interface AiConfig {
   id?: number;
@@ -31,7 +32,37 @@ interface FishModelCatalog {
   warning?: string;
 }
 
-const activeTab = ref<'ai' | 'tts'>('ai');
+const route = useRoute();
+const activeTab = ref<'ai' | 'tts' | 'access'>('ai');
+const accessTokenDraft = ref('');
+const accessTokenSaved = ref(false);
+const accessTokenHasValue = ref(false);
+
+function syncAccessTabFromRoute() {
+  if (route.query.tab === 'access') activeTab.value = 'access';
+}
+
+function refreshAccessTokenState() {
+  const current = getAccessToken();
+  accessTokenHasValue.value = Boolean(current);
+  accessTokenDraft.value = current;
+}
+
+function saveAccessToken() {
+  const saved = setAccessToken(accessTokenDraft.value);
+  accessTokenHasValue.value = Boolean(saved);
+  accessTokenSaved.value = true;
+  window.setTimeout(() => {
+    accessTokenSaved.value = false;
+  }, 2000);
+}
+
+function removeAccessToken() {
+  clearAccessToken();
+  accessTokenDraft.value = '';
+  accessTokenHasValue.value = false;
+  accessTokenSaved.value = false;
+}
 
 // AI Configs State
 const aiConfigs = ref<AiConfig[]>([]);
@@ -292,7 +323,11 @@ const activateTtsConfig = async (id: number) => {
   }
 };
 
+watch(() => route.query.tab, syncAccessTabFromRoute);
+
 onMounted(() => {
+  syncAccessTabFromRoute();
+  refreshAccessTokenState();
   fetchAiConfigs();
   fetchTtsConfigs();
 });
@@ -305,7 +340,7 @@ onMounted(() => {
       <div class="header-title">
         <h2>系统配置</h2>
         <span class="header-subtitle mono-text">
-          CONFIGURATION // AI ENGINES & TTS PROVIDERS
+          CONFIGURATION // AI ENGINES, TTS PROVIDERS & ACCESS TOKEN
         </span>
       </div>
     </div>
@@ -338,7 +373,17 @@ onMounted(() => {
         TTS 语音平台配置
       </button>
 
-      <!-- system tab omitted -->
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'access' }"
+        @click="activeTab = 'access'"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        访问令牌
+      </button>
     </div>
 
     <!-- Active view area -->
@@ -542,7 +587,45 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- TAB 3: System settings (Local env overrides) omitted -->
+      <div v-if="activeTab === 'access'" class="tab-content-access animate-fade-in">
+        <div class="panel-section-header">
+          <div>
+            <h3>API 访问令牌</h3>
+            <p>
+              与 API 的 <code>DUB_ACCESS_TOKEN</code> 保持一致。令牌只保存在本浏览器
+              <code>localStorage</code>，请求头使用 <code>Authorization: Bearer</code>，
+              媒体地址附加 <code>access_token</code> 查询参数。Docker 镜像不会烘焙令牌。
+            </p>
+          </div>
+        </div>
+
+        <div class="form-card">
+          <div class="card-header-simple">
+            <h4>当前浏览器</h4>
+            <span class="mono-text" style="font-size: 11px; color: var(--text-muted);">
+              {{ accessTokenHasValue ? '已保存' : '未填写' }}
+            </span>
+          </div>
+          <label class="field">
+            <span>访问令牌</span>
+            <input
+              v-model="accessTokenDraft"
+              type="password"
+              autocomplete="off"
+              placeholder="与 DUB_ACCESS_TOKEN 相同的值"
+            >
+            <span class="field-hint">
+              API 显式设置 <code>DUB_AUTH_MODE=disabled</code> 时不需要填写。
+              未配置令牌且未显式关闭鉴权时，API 会拒绝启动，界面无法绕过。
+            </span>
+          </label>
+          <div class="dialog-actions" style="border-top: none; padding-top: 0; justify-content: flex-start;">
+            <button type="button" class="btn btn-primary glow-effect-cyan" @click="saveAccessToken">保存到本机</button>
+            <button type="button" class="btn btn-outline" @click="removeAccessToken">清除</button>
+            <span v-if="accessTokenSaved" class="field-hint">已写入本浏览器。</span>
+          </div>
+        </div>
+      </div>
 
     </div>
 

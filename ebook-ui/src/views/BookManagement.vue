@@ -5,7 +5,7 @@ import { useBookStore, type Book } from '@/stores/bookStore';
 import BookCard from '@/components/books/BookCard.vue';
 import BookListItem from '@/components/books/BookListItem.vue';
 import BookMetadataModal from '@/components/books/BookMetadataModal.vue';
-import request from '@/api/request';
+import request, { UPLOAD_TIMEOUT } from '@/api/request';
 
 const bookStore = useBookStore();
 const router = useRouter();
@@ -120,7 +120,8 @@ const uploadFile = async (file: File) => {
     await request.post('/books/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
-      }
+      },
+      timeout: UPLOAD_TIMEOUT
     });
     // Refresh book list after upload
     await bookStore.fetchBooks();

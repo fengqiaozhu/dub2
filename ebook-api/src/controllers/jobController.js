@@ -1,4 +1,5 @@
 const { jobRepository } = require('../repositories');
+const jobManager = require('../services/jobManager');
 
 class JobController {
   async getJob(req, res) {
@@ -6,6 +7,21 @@ class JobController {
       const jobId = req.params.id;
       const job = await jobRepository.findById(jobId);
       
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      res.json({ data: job });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  async cancelJob(req, res) {
+    try {
+      const jobId = req.params.id;
+      const job = await jobManager.cancelJob(jobId);
+
       if (!job) {
         return res.status(404).json({ error: 'Job not found' });
       }

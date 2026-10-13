@@ -153,28 +153,29 @@ class ParserService {
     const mobiParserModule = await import('@lingo-reader/mobi-parser');
     const mobiParser = mobiParserModule.default || mobiParserModule;
     const parsedMobi = await mobiParser.parseMobi(fileBuffer);
-    
-    // Simplistic handling for Mobi parser structure
-    // Since mobi content extraction might differ depending on library
-    // Using simple approach based on text extraction
-    
+
+    return this.buildChaptersFromMobi(parsedMobi);
+  }
+
+  buildChaptersFromMobi(parsedMobi) {
     let textContent = '';
-    // Typically mobiParser returns html content or text
-    if (parsedMobi && parsedMobi.text) {
-       textContent = parsedMobi.text;
-    } else if (parsedMobi && parsedMobi.html) {
-       textContent = parsedMobi.html.replace(/<[^>]+>/g, '');
-    } else {
-       // fallback: assuming it might return an array of chapters
-       return [{
-         title: 'Full Book',
-         content: JSON.stringify(parsedMobi), // Last resort fallback
-         chapter_index: 0
-       }];
+    if (parsedMobi && typeof parsedMobi.text === 'string' && parsedMobi.text.trim()) {
+      textContent = parsedMobi.text;
+    } else if (parsedMobi && typeof parsedMobi.html === 'string') {
+      // 把标签替换为换行而不是直接删除，保持块级内容的分隔；纯标签/空白结果视为失败。
+      const stripped = parsedMobi.html.replace(/<[^>]+>/g, '\n');
+      if (stripped.trim()) {
+        textContent = stripped;
+      }
+    }
+    if (!textContent) {
+      throw new Error('MOBI parsing returned no usable text or html content');
     }
 
-    // Split text by typical chapter markers if it's one big string
-    // This is similar to the TXT parser logic
+    return this.buildChaptersFromText(textContent);
+  }
+
+  buildChaptersFromText(textContent) {
     const lines = textContent.split('\n');
     const chapterRegex = /^(第[\d一二三四五六七八九十百千]+[章节卷回]|Chapter\s+\d+)/i;
     
