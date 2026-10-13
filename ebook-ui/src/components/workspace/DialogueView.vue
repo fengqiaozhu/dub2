@@ -103,6 +103,7 @@ const skipUpdatingKey = ref<string | null>(null);
 const confirmReparseVisible = ref(false);
 const audioEditorItem = ref<AudioItem | null>(null);
 const audioEditorSaving = ref(false);
+const audioUploadingId = ref<number | string | null>(null);
 const emotionEditor = ref<{ annotation: Annotation; value: string } | null>(null);
 const emotionEditorPosition = ref({ top: 0, left: 0 });
 const emotionSavingId = ref<number | null>(null);
@@ -866,6 +867,39 @@ async function saveEditedAudio(payload: { blob: Blob; duration: number }) {
   }
 }
 
+async function handleAudioUpload(dialogueId: number | string | undefined, event: Event) {
+  if (!dialogueId) return;
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  if (!file) return;
+  audioUploadingId.value = dialogueId;
+  errorMessage.value = '';
+  try {
+    const form = new FormData();
+    form.append('audio', file, file.name);
+    try {
+      const duration = await new Promise<number | null>((resolve) => {
+        const url = URL.createObjectURL(file);
+        const a = new Audio(url);
+        a.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(a.duration); };
+        a.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      });
+      if (duration && Number.isFinite(duration) && duration > 0) {
+        form.append('duration', String(duration));
+      }
+    } catch {
+      // ignore duration measurement failure
+    }
+    await request.post(`/dialogues/${dialogueId}/audio`, form, { timeout: UPLOAD_TIMEOUT });
+    await refreshChapter();
+  } catch (error: any) {
+    errorMessage.value = error?.response?.data?.error || '导入音频失败';
+  } finally {
+    audioUploadingId.value = null;
+    target.value = '';
+  }
+}
+
 function startRerange() {
   if (!selectionDraft.value?.editId) return;
   rerangeAnnotationId.value = selectionDraft.value.editId;
@@ -1364,6 +1398,25 @@ onMounted(() => {
                         <path d="M3 12h3l2-7 4 14 2-7h7"/>
                       </svg>
                     </button>
+                    <label
+                      class="audio-edit-btn upload-audio-label"
+                      :class="{ disabled: audioUploadingId === segment.audioItem.dialogue_id }"
+                      title="导入音频文件"
+                      @click.stop
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                      </svg>
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        style="display: none"
+                        :disabled="audioUploadingId === segment.audioItem.dialogue_id"
+                        @change="handleAudioUpload(segment.audioItem.dialogue_id, $event)"
+                      />
+                    </label>
                   </div>
                   <div v-if="isStalePlayableAudio(segment.audioItem)" class="stale-audio-notice">
                     <div class="stale-copy">
@@ -1398,6 +1451,16 @@ onMounted(() => {
                     <button type="button" class="issue-btn primary" :disabled="redubbingItemId === segment.audioItem.id || !segment.audioItem.dialogue_id" @click="redubAudioItem(segment.audioItem)">{{ redubbingItemId === segment.audioItem.id ? '提交中' : '重配' }}</button>
                     <button type="button" class="issue-btn" :disabled="!segment.audioItem.dialogue_id" @click="clearAudioItem(segment.audioItem)">清除</button>
                     <button type="button" class="issue-btn" :disabled="segment.audioItem.type === 'narration'" @click="editAudioItem(segment.audioItem, $event)">编辑</button>
+                    <label class="issue-btn upload-audio-btn" :class="{ disabled: audioUploadingId === segment.audioItem.dialogue_id }" title="导入本地音频">
+                      <span>{{ audioUploadingId === segment.audioItem.dialogue_id ? '导入中…' : '导入音频' }}</span>
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        style="display: none"
+                        :disabled="audioUploadingId === segment.audioItem.dialogue_id"
+                        @change="handleAudioUpload(segment.audioItem.dialogue_id, $event)"
+                      />
+                    </label>
                   </div>
                 </div>
               </template>
@@ -1607,6 +1670,8 @@ onMounted(() => {
 .issue-btn.primary { border-color: rgba(0,212,170,.42); color: var(--accent-cyan); }
 .issue-btn:hover:not(:disabled) { border-color: var(--accent-cyan); color: var(--accent-cyan); }
 .issue-btn:disabled { opacity: .45; cursor: not-allowed; }
+.upload-audio-btn, .upload-audio-label { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; margin: 0; }
+.upload-audio-btn.disabled, .upload-audio-label.disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .inline-empty { min-height: 160px; height: auto; border-bottom: 1px solid var(--border-color); }
 .theme-modal-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: var(--space-4); background: rgba(0,0,0,.68); backdrop-filter: blur(6px); }
 .theme-dialog { width: min(420px, 100%); border: 1px solid var(--border-focus); border-radius: var(--radius-md); background: var(--bg-panel); box-shadow: 0 18px 60px rgba(0,0,0,.45); overflow: hidden; }

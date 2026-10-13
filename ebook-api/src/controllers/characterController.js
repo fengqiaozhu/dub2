@@ -237,10 +237,21 @@ class CharacterController {
       const audioUrl = mediaUrlForKey(key);
 
       const previousUrl = dialogue.audio_url;
+      let sourceHash = dialogue.audio_source_hash;
+      if (!sourceHash) {
+        try {
+          const plan = await dubbingPlanner.createPlan(dialogue.chapter_id, { includeCompleted: true });
+          const task = (plan.tasks || []).find((t) => String(t.dialogueId) === String(id));
+          const { computeDialogueAudioHash } = require('../services/chapterAudioState');
+          sourceHash = computeDialogueAudioHash(dialogue, task || {});
+        } catch (hashErr) {
+          console.warn('[CharacterController] Failed to compute sourceHash for edited audio:', hashErr.message);
+        }
+      }
       await dialogueRepository.update(id, {
         audio_url: audioUrl,
         audio_duration: safeDuration,
-        audio_source_hash: dialogue.audio_source_hash,
+        audio_source_hash: sourceHash,
         audio_error: null,
         audio_status: 'current'
       });

@@ -15,6 +15,9 @@ const pickerTargetRole = ref('');
 
 onMounted(() => {
   workspaceStore.fetchVoices();
+  if (workspaceStore.activeBookId) {
+    workspaceStore.fetchCharacterProfiles(workspaceStore.activeBookId);
+  }
 });
 
 const bookCharacters = computed(() => workspaceStore.bookCharacters);
