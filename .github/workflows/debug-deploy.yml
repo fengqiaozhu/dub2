@@ -1,0 +1,176 @@
+name: Debug Preview Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type "preview-wt" to confirm deployment'
+        required: true
+        type: string
+      target_environment:
+        description: 'Target preview environment'
+        required: true
+        default: 'cloudflare-debug-preview'
+        type: choice
+        options:
+          - 'cloudflare-debug-preview'
+      notes:
+        description: 'Deployment reason or board reference'
+        required: false
+        default: 'Manual debug deployment for CMP-74 / CMP-75 board preview'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-debug-preview:
+    name: Build, Deploy and Verify Fullstack Preview
+    runs-on: [self-hosted, preview-host]
+    timeout-minutes: 15
+    steps:
+      - name: Validate Confirmation Input
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$CONFIRMATION" != "preview-wt" ]; then
+            echo "Error: Manual confirmation must equal 'preview-wt'. Aborted."
+            exit 1
+          fi
+
+      - name: Checkout debug preview branch
+        uses: actions/checkout@v4
+        with:
+          ref: 'cmp-73/debug-preview'
+
+      - name: Print Deployment Metadata & Target SHA
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          DEPLOY_NOTES: ${{ inputs.notes }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          TARGET_SHA=$(git rev-parse HEAD)
+          echo "TARGET_SHA=${TARGET_SHA}" >> "$GITHUB_ENV"
+          echo "======================================================="
+          echo "DUB2 DEBUG DEPLOYMENT: CLOUDFLARE PROTECTED FULLSTACK"
+          echo "======================================================="
+          echo "Target Commit SHA: ${TARGET_SHA}"
+          echo "Target Branch Ref: cmp-73/debug-preview"
+          echo "Workflow Run ID: ${GITHUB_RUN_ID}"
+          echo "Workflow Run Number: ${GITHUB_RUN_NUMBER}"
+          echo "Triggered By: ${GITHUB_ACTOR}"
+          echo "Preview Hostname: dub2-preview.mimopolo.dpdns.org"
+          echo "Preview URL: https://dub2-preview.mimopolo.dpdns.org"
+          echo "Target Environment: ${TARGET_ENVIRONMENT}"
+          echo "Notes: ${DEPLOY_NOTES}"
+          echo "======================================================="
+
+      - name: Prepare Environment & Validate Topology
+        run: |
+          echo "Preparing preview environment..."
+          if [ -f /etc/preview.env ] && [ ! -f .env ]; then
+            cp /etc/preview.env .env
+          elif [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+          DUB_ACCESS_TOKEN="ci-dummy-placeholder-token" \
+            docker compose -p preview-wt -f docker-compose.yml -f docker-compose.preview.yml config --format json > /tmp/preview-compose.json
+          python3 - <<'PY'
+          import json
+          cfg = json.load(open("/tmp/preview-compose.json"))
+          for name in ("postgres", "minio", "api"):
+              ports = cfg["services"][name].get("ports") or []
+              if ports:
+                  raise SystemExit(f"{name} must not publish host ports, got {ports}")
+          ui_ports = cfg["services"]["ui"].get("ports") or []
+          if len(ui_ports) != 1 or ui_ports[0].get("host_ip") != "127.0.0.1" or str(ui_ports[0].get("published")) != "13001":
+              raise SystemExit(f"ui must bind 127.0.0.1:13001 only, got {ui_ports}")
+          print("Preview compose topology verified (internal ports kept off the host).")
+          PY
+          rm -f /tmp/preview-compose.json
+
+      - name: Rebuild and Restart Fullstack Preview Stack
+        run: |
+          echo "Executing fullstack rebuild and restart on preview host..."
+          docker compose -p preview-wt -f docker-compose.yml -f docker-compose.preview.yml up -d --build
+          echo "Active containers:"
+          docker compose -p preview-wt -f docker-compose.yml -f docker-compose.preview.yml ps
+
+      - name: Verify Fullstack Preview Health Probe
+        run: |
+          echo "Verifying health endpoint at 127.0.0.1:13001/api/health..."
+          HEALTH_OK=false
+          for i in $(seq 1 30); do
+            RESPONSE=$(curl -s http://127.0.0.1:13001/api/health || true)
+            if echo "$RESPONSE" | grep -q '"ok":true'; then
+              echo "Preview health probe passed: $RESPONSE"
+              HEALTH_OK=true
+              break
+            fi
+            echo "Waiting for stack to become healthy... ($i/30)"
+            sleep 2
+          done
+          if [ "$HEALTH_OK" != "true" ]; then
+            echo "Preview stack health check failed!"
+            exit 1
+          fi
+
+      - name: Generate Deployment Audit Manifest
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          mkdir -p deployment-manifest
+          cat <<EOF > deployment-manifest/deployment.json
+          {
+            "deployment_sha": "${TARGET_SHA}",
+            "target_ref": "cmp-73/debug-preview",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_url": "${RUN_URL}",
+            "preview_url": "https://dub2-preview.mimopolo.dpdns.org",
+            "health_endpoint": "https://dub2-preview.mimopolo.dpdns.org/api/health",
+            "access_control": {
+              "auth_mode": "fail-closed",
+              "application_token": "enabled via DUB_ACCESS_TOKEN",
+              "network_exposure": "Cloudflare Tunnel to 127.0.0.1:13001; docker-compose.preview.yml keeps 5432/9000/9001/13000 off the host"
+            },
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat deployment-manifest/deployment.json
+
+      - name: Upload Deployment Manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-deployment-manifest
+          path: deployment-manifest/deployment.json
+          retention-days: 7
+
+      - name: Publish Step Summary to GitHub Actions
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## 🚀 dub2 Debug Preview Deployment Summary
+
+          - **Deployment SHA**: \`${TARGET_SHA}\`
+          - **Target Branch**: \`cmp-73/debug-preview\`
+          - **Workflow Run**: [Run #${GITHUB_RUN_NUMBER}](${RUN_URL})
+          - **Preview URL**: [https://dub2-preview.mimopolo.dpdns.org](https://dub2-preview.mimopolo.dpdns.org)
+          - **Health Endpoint**: [https://dub2-preview.mimopolo.dpdns.org/api/health](https://dub2-preview.mimopolo.dpdns.org/api/health)
+          - **Architecture**: Fullstack (UI + API + PostgreSQL 16 + MinIO S3) via Cloudflare Tunnel
+          - **Access Control**: Application-level Bearer Token (\`DUB_ACCESS_TOKEN\`), Fail-Closed
+          - **Isolation**: \`docker-compose.preview.yml\` keeps 5432, 9000, 9001, and 13000 off the host. Tunnel origin is 127.0.0.1:13001.
+
+          ### ⚠️ Failure Handling & Rollback Policy
+          - **Failure Handling**: Retain data volumes, Cloudflare Tunnel, and DNS records on failure. Do not destroy volumes. If containers were replaced before failure, stack rollback is performed by redeploying accepted SHA \`40239b90fd936dcaad04c418f09c35df8ae4b145\` without deleting volumes.
+          - **Workflow Rollback**: Before merge, close the draft pull request. If authorized and merged in the future, revert the single commit that added this workflow file.
+          EOF
