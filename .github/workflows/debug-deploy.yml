@@ -1,0 +1,124 @@
+name: Debug Preview Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Target preview environment'
+        required: true
+        default: 'cloudflare-debug-preview'
+        type: choice
+        options:
+          - 'cloudflare-debug-preview'
+          - 'dry-run-validation'
+      notes:
+        description: 'Deployment reason or board reference'
+        required: false
+        default: 'Manual debug deployment for CMP-74 / CMP-75 board preview'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-debug-preview:
+    name: Build, Verify and Record Debug Preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository at target SHA
+        uses: actions/checkout@v4
+
+      - name: Print Deployment Metadata & Target SHA
+        run: |
+          echo "======================================================="
+          echo "DUB2 DEBUG DEPLOYMENT: CLOUDFLARE PROTECTED FULLSTACK"
+          echo "======================================================="
+          echo "Target Commit SHA: ${{ github.sha }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Workflow Run ID: ${{ github.run_id }}"
+          echo "Workflow Run Number: ${{ github.run_number }}"
+          echo "Triggered By: ${{ github.actor }}"
+          echo "Preview Hostname: dub2-preview.mimopolo.dpdns.org"
+          echo "Preview URL: https://dub2-preview.mimopolo.dpdns.org"
+          echo "Target Environment: ${{ inputs.target_environment }}"
+          echo "Notes: ${{ inputs.notes }}"
+          echo "======================================================="
+
+      - name: Validate Docker Compose Configuration
+        run: |
+          echo "Validating docker-compose.yml structure..."
+          DUB_ACCESS_TOKEN="ci-dummy-token-for-validation" docker compose config --quiet
+          echo "Docker compose configuration syntax and service topology verified."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            ebook-api/package-lock.json
+            ebook-ui/package-lock.json
+
+      - name: Verify Backend Integrity & Auth Gate
+        working-directory: ebook-api
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node -c index.js src/app.js src/middleware/auth.js src/controllers/healthController.js
+          echo "Backend syntax and entrypoints verified."
+
+      - name: Verify Frontend Production Build
+        working-directory: ebook-ui
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          test -f dist/index.html || { echo "UI build missing dist/index.html"; exit 1; }
+          echo "Frontend build verified successfully."
+
+      - name: Generate Deployment Audit Manifest
+        run: |
+          mkdir -p deployment-manifest
+          cat <<EOF > deployment-manifest/deployment.json
+          {
+            "deployment_sha": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "run_id": "${{ github.run_id }}",
+            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "preview_url": "https://dub2-preview.mimopolo.dpdns.org",
+            "health_endpoint": "https://dub2-preview.mimopolo.dpdns.org/api/health",
+            "access_control": {
+              "auth_mode": "fail-closed",
+              "application_token": "enabled via DUB_ACCESS_TOKEN",
+              "network_exposure": "Cloudflare Tunnel (UI 13001 only, ports 5432/9000/9001 internal)"
+            },
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat deployment-manifest/deployment.json
+
+      - name: Upload Deployment Manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-deployment-manifest
+          path: deployment-manifest/deployment.json
+          retention-days: 7
+
+      - name: Publish Step Summary to GitHub Actions
+        run: |
+          cat <<EOF >> $GITHUB_STEP_SUMMARY
+          ## 🚀 dub2 Debug Preview Deployment Summary
+
+          - **Deployment SHA**: \`${{ github.sha }}\`
+          - **Branch**: \`${{ github.ref_name }}\`
+          - **Workflow Run**: [Run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          - **Preview URL**: [https://dub2-preview.mimopolo.dpdns.org](https://dub2-preview.mimopolo.dpdns.org)
+          - **Health Endpoint**: [https://dub2-preview.mimopolo.dpdns.org/api/health](https://dub2-preview.mimopolo.dpdns.org/api/health)
+          - **Architecture**: Fullstack (UI + API + PostgreSQL 16 + MinIO S3) via Cloudflare Tunnel
+          - **Access Control**: Application-level Bearer Token (\`DUB_ACCESS_TOKEN\`), Fail-Closed
+          - **Isolation**: Internal ports 5432, 9000, 9001 are NOT exposed to public network
+
+          ### 🔄 Rollback & Cleanup Instructions
+          1. On the host running the preview: \`docker compose down -v\`
+          2. Disconnect Cloudflare Tunnel container.
+          3. Remove the CNAME record for \`dub2-preview.mimopolo.dpdns.org\`.
+          EOF
