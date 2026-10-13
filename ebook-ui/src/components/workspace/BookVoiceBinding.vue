@@ -67,21 +67,21 @@ const removeVoiceBinding = async (characterName: string) => {
 // ==================== 角色档案 / 别名 / 读音规则 ====================
 
 const expandedRole = ref<string | null>(null);
-const profileBusy = ref<Record<number, boolean>>({});
-const profileImpactsLoading = ref<Record<number, boolean>>({});
-const aliasText = ref<Record<number, string>>({});
-const panelError = ref<Record<number, string>>({});
-const ruleBusy = ref<Record<number, boolean>>({});
-const ruleForms = ref<Record<number, { type: 'alias' | 'phoneme'; match: string; replacement: string }>>({});
+const profileBusy = ref<Record<string | number, boolean>>({});
+const profileImpactsLoading = ref<Record<string | number, boolean>>({});
+const aliasText = ref<Record<string | number, string>>({});
+const panelError = ref<Record<string | number, string>>({});
+const ruleBusy = ref<Record<string | number, boolean>>({});
+const ruleForms = ref<Record<string | number, { type: 'alias' | 'phoneme'; match: string; replacement: string }>>({});
 
 const profiles = computed(() => workspaceStore.characterProfiles as CharacterProfile[]);
 
 const profileFor = (name: string): CharacterProfile | null =>
   profiles.value.find((p) => p.canonical_name === name) || null;
 
-const profileRules = (profileId: number): PronunciationRule[] =>
+const profileRules = (profileId: number | string): PronunciationRule[] =>
   workspaceStore.pronunciationRules.filter(
-    (rule) => Number(rule.profile_id) === Number(profileId)
+    (rule) => String(rule.profile_id) === String(profileId) || Number(rule.profile_id) === Number(profileId)
   );
 
 const profileRuleCount = (characterName: string): number => {
@@ -139,7 +139,7 @@ const addAlias = async (profile: CharacterProfile) => {
   }
 };
 
-const removeAlias = async (profile: CharacterProfile, aliasId: number) => {
+const removeAlias = async (profile: CharacterProfile, aliasId: number | string) => {
   const bookId = workspaceStore.activeBookId;
   if (!bookId) return;
   profileBusy.value[profile.id] = true;
@@ -153,7 +153,7 @@ const removeAlias = async (profile: CharacterProfile, aliasId: number) => {
   }
 };
 
-const getRuleForm = (profileId: number) => {
+const getRuleForm = (profileId: number | string) => {
   if (!ruleForms.value[profileId]) {
     ruleForms.value[profileId] = { type: 'alias', match: '', replacement: '' };
   }
