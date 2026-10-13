@@ -30,8 +30,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Validate Confirmation Input
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
         run: |
-          if [ "${{ inputs.confirmation }}" != "preview-wt" ]; then
+          if [ "$CONFIRMATION" != "preview-wt" ]; then
             echo "Error: Manual confirmation must equal 'preview-wt'. Aborted."
             exit 1
           fi
@@ -42,21 +44,27 @@ jobs:
           ref: 'cmp-73/debug-preview'
 
       - name: Print Deployment Metadata & Target SHA
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          DEPLOY_NOTES: ${{ inputs.notes }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_ACTOR: ${{ github.actor }}
         run: |
           TARGET_SHA=$(git rev-parse HEAD)
-          echo "TARGET_SHA=${TARGET_SHA}" >> $GITHUB_ENV
+          echo "TARGET_SHA=${TARGET_SHA}" >> "$GITHUB_ENV"
           echo "======================================================="
           echo "DUB2 DEBUG DEPLOYMENT: CLOUDFLARE PROTECTED FULLSTACK"
           echo "======================================================="
           echo "Target Commit SHA: ${TARGET_SHA}"
           echo "Target Branch Ref: cmp-73/debug-preview"
-          echo "Workflow Run ID: ${{ github.run_id }}"
-          echo "Workflow Run Number: ${{ github.run_number }}"
-          echo "Triggered By: ${{ github.actor }}"
+          echo "Workflow Run ID: ${GITHUB_RUN_ID}"
+          echo "Workflow Run Number: ${GITHUB_RUN_NUMBER}"
+          echo "Triggered By: ${GITHUB_ACTOR}"
           echo "Preview Hostname: dub2-preview.mimopolo.dpdns.org"
           echo "Preview URL: https://dub2-preview.mimopolo.dpdns.org"
-          echo "Target Environment: ${{ inputs.target_environment }}"
-          echo "Notes: ${{ inputs.notes }}"
+          echo "Target Environment: ${TARGET_ENVIRONMENT}"
+          echo "Notes: ${DEPLOY_NOTES}"
           echo "======================================================="
 
       - name: Prepare Environment & Validate Topology
@@ -110,14 +118,19 @@ jobs:
           fi
 
       - name: Generate Deployment Audit Manifest
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           mkdir -p deployment-manifest
           cat <<EOF > deployment-manifest/deployment.json
           {
             "deployment_sha": "${TARGET_SHA}",
             "target_ref": "cmp-73/debug-preview",
-            "run_id": "${{ github.run_id }}",
-            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_url": "${RUN_URL}",
             "preview_url": "https://dub2-preview.mimopolo.dpdns.org",
             "health_endpoint": "https://dub2-preview.mimopolo.dpdns.org/api/health",
             "access_control": {
@@ -138,13 +151,19 @@ jobs:
           retention-days: 7
 
       - name: Publish Step Summary to GitHub Actions
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          cat <<EOF >> $GITHUB_STEP_SUMMARY
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
           ## 🚀 dub2 Debug Preview Deployment Summary
 
           - **Deployment SHA**: \`${TARGET_SHA}\`
           - **Target Branch**: \`cmp-73/debug-preview\`
-          - **Workflow Run**: [Run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          - **Workflow Run**: [Run #${GITHUB_RUN_NUMBER}](${RUN_URL})
           - **Preview URL**: [https://dub2-preview.mimopolo.dpdns.org](https://dub2-preview.mimopolo.dpdns.org)
           - **Health Endpoint**: [https://dub2-preview.mimopolo.dpdns.org/api/health](https://dub2-preview.mimopolo.dpdns.org/api/health)
           - **Architecture**: Fullstack (UI + API + PostgreSQL 16 + MinIO S3) via Cloudflare Tunnel
