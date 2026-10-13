@@ -51,7 +51,7 @@ Internet (Browser / API Client)
 
 ### 安全与隔离约束
 1. **对外仅暴露 UI**：通过 Cloudflare Tunnel 仅暴露 UI 服务的 80 端口，外部通过 `https://dub2-preview.mimopolo.dpdns.org` 访问。
-2. **敏感端口封锁**：PostgreSQL (5432)、MinIO API (9000)、MinIO 控制台 (9001) 均保持内部容器网络互通，不对公网开放。
+2. **敏感端口封锁**：PostgreSQL (5432)、MinIO API (9000)、MinIO 控制台 (9001) 以及 API (13000) 只在 Compose 网络内互通。预览主机必须叠加 `docker-compose.preview.yml`：该覆盖文件去掉上述宿主机端口，并把 UI 绑到 `127.0.0.1:13001`，供本机 Cloudflare Tunnel 访问。基础 `docker-compose.yml` 仍为本地开发发布端口，不能单独拿来当预览主机配置。
 3. **应用鉴权开启 (Fail-Closed)**：
    - 环境变量注入 `DUB_ACCESS_TOKEN`，系统启用严格的 Bearer Token 鉴权。
    - 未携带或携带错误令牌的 API 请求统一返回 401 Unauthorized。
@@ -89,9 +89,9 @@ curl -s https://dub2-preview.mimopolo.dpdns.org/api/health
 
 当调试阶段结束或需要回退清理时：
 
-1. **停止本地容器栈**：
+1. **停止本地容器栈**（在预览目录，带覆盖文件）：
    ```bash
-   docker compose down -v
+   docker compose -f docker-compose.yml -f docker-compose.preview.yml down -v
    ```
 2. **断开 Cloudflare Tunnel**：
    停止运行的 `cloudflared` 容器即可立即切断外部流量。

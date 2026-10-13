@@ -47,9 +47,22 @@ jobs:
 
       - name: Validate Docker Compose Configuration
         run: |
-          echo "Validating docker-compose.yml structure..."
-          DUB_ACCESS_TOKEN="ci-dummy-token-for-validation" docker compose config --quiet
-          echo "Docker compose configuration syntax and service topology verified."
+          echo "Validating preview compose topology..."
+          DUB_ACCESS_TOKEN="ci-dummy-token-for-validation" \
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml config --format json > /tmp/preview-compose.json
+          python3 - <<'PY'
+          import json
+          cfg = json.load(open("/tmp/preview-compose.json"))
+          for name in ("postgres", "minio", "api"):
+              ports = cfg["services"][name].get("ports") or []
+              if ports:
+                  raise SystemExit(f"{name} must not publish host ports, got {ports}")
+          ui_ports = cfg["services"]["ui"].get("ports") or []
+          if len(ui_ports) != 1 or ui_ports[0].get("host_ip") != "127.0.0.1" or str(ui_ports[0].get("published")) != "13001":
+              raise SystemExit(f"ui must bind 127.0.0.1:13001 only, got {ui_ports}")
+          print("Preview compose keeps database, object storage, and API off the host.")
+          PY
+          rm -f /tmp/preview-compose.json
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -89,7 +102,7 @@ jobs:
             "access_control": {
               "auth_mode": "fail-closed",
               "application_token": "enabled via DUB_ACCESS_TOKEN",
-              "network_exposure": "Cloudflare Tunnel (UI 13001 only, ports 5432/9000/9001 internal)"
+              "network_exposure": "Cloudflare Tunnel to 127.0.0.1:13001; docker-compose.preview.yml keeps 5432/9000/9001/13000 off the host"
             },
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
@@ -115,7 +128,7 @@ jobs:
           - **Health Endpoint**: [https://dub2-preview.mimopolo.dpdns.org/api/health](https://dub2-preview.mimopolo.dpdns.org/api/health)
           - **Architecture**: Fullstack (UI + API + PostgreSQL 16 + MinIO S3) via Cloudflare Tunnel
           - **Access Control**: Application-level Bearer Token (\`DUB_ACCESS_TOKEN\`), Fail-Closed
-          - **Isolation**: Internal ports 5432, 9000, 9001 are NOT exposed to public network
+          - **Isolation**: `docker-compose.preview.yml` does not publish 5432, 9000, 9001, or 13000. Tunnel origin is 127.0.0.1:13001.
 
           ### 🔄 Rollback & Cleanup Instructions
           1. On the host running the preview: \`docker compose down -v\`
