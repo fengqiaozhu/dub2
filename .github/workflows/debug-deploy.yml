@@ -16,6 +16,9 @@ on:
         required: false
         default: 'Manual debug deployment for CMP-74 / CMP-75 board preview'
         type: string
+  push:
+    branches:
+      - 'cmp-73/debug-preview'
 
 permissions:
   contents: read
