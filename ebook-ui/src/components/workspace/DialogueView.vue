@@ -867,7 +867,7 @@ async function saveEditedAudio(payload: { blob: Blob; duration: number }) {
   }
 }
 
-async function handleAudioUpload(dialogueId: number | string | undefined, event: Event) {
+async function handleAudioUpload(dialogueId: number | string | null | undefined, event: Event) {
   if (!dialogueId) return;
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
