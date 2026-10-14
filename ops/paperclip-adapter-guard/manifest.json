@@ -1,0 +1,10 @@
+{
+  "packageName": "@paperclipai/adapter-opencode-local",
+  "supportedVersions": [
+    "2026.1005.0",
+    "2026.1012.0"
+  ],
+  "targetRelativePath": "dist/server/execute.js",
+  "marker": "Resolve the session before the timeout return.",
+  "packageSubdir": "node_modules/@paperclipai/adapter-opencode-local"
+}
