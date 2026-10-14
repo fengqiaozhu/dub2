@@ -4,6 +4,22 @@ const fishAudioService = require('../services/fishAudioService');
 
 const TTS_PROVIDERS = new Set(['mosi', 'fish_audio', 'fish_audio_self_hosted']);
 
+function toPublicConfig(config) {
+  if (!config) return null;
+  return {
+    id: config.id,
+    name: config.name,
+    provider: config.provider,
+    api_url: config.api_url,
+    model: config.model,
+    is_reasoning: config.is_reasoning,
+    is_active: config.is_active,
+    has_api_key: Boolean(config.api_key ?? config.has_api_key),
+    created_at: config.created_at,
+    updated_at: config.updated_at
+  };
+}
+
 function normalizeOptionalModel(model) {
   if (model === undefined || model === null) return null;
   const normalized = String(model).trim();
@@ -51,7 +67,7 @@ class SettingController {
   async getAiConfigs(req, res) {
     try {
       const configs = await aiConfigRepository.findAll();
-      res.json({ data: configs });
+      res.json({ data: configs.map(toPublicConfig) });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -143,7 +159,7 @@ class SettingController {
   async getTtsConfigs(req, res) {
     try {
       const configs = await ttsConfigRepository.findAll();
-      res.json({ data: configs });
+      res.json({ data: configs.map(toPublicConfig) });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

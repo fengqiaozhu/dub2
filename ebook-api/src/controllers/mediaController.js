@@ -3,7 +3,9 @@ const storageService = require('../services/storage/storageService');
 class MediaController {
   async getMedia(req, res) {
     try {
-      const key = decodeURIComponent(req.params[0] || '');
+      // Express has already decoded route parameters. A second pass corrupts
+      // keys that contain literal percent sequences.
+      const key = req.params[0] || '';
       if (!key) {
         return res.status(400).json({ error: 'media key is required' });
       }

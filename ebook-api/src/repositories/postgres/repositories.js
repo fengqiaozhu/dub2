@@ -237,6 +237,24 @@ class ChapterCharacterRepository {
     return result.rowCount;
   }
 
+  async deleteByChapterIdExceptIds(chapterId, keepIds) {
+    const ids = (keepIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    let query;
+    let values;
+    if (ids.length === 0) {
+      query = 'DELETE FROM chapter_characters WHERE chapter_id = $1';
+      values = [chapterId];
+    } else {
+      const placeholders = ids.map((_, index) => `$${index + 2}`).join(', ');
+      query = `DELETE FROM chapter_characters WHERE chapter_id = $1 AND id NOT IN (${placeholders})`;
+      values = [chapterId, ...ids];
+    }
+    const result = await db.query(query, values);
+    return result.rowCount;
+  }
+
   async deleteUnusedByChapterId(chapterId) {
     const result = await db.query(`
       DELETE FROM chapter_characters
@@ -325,6 +343,18 @@ class DialogueRepository {
     `, [chapterId]);
   }
 
+  async findByBookId(bookId) {
+    return db.many(`
+      SELECT d.id, d.chapter_id, d.content, d.emotion, d.char_start, d.char_end,
+             d.audio_url, d.audio_source_hash, d.audio_status, d.order_index,
+             d.source, cc.character_name, cc.book_id
+      FROM dialogues d
+      JOIN chapter_characters cc ON cc.id = d.chapter_character_id
+      WHERE cc.book_id = $1
+      ORDER BY d.chapter_id ASC, d.char_start ASC, d.id ASC
+    `, [bookId]);
+  }
+
   async clearAudioByChapterId(chapterId) {
     const result = await db.query(`
       UPDATE dialogues
@@ -411,6 +441,24 @@ class DialogueRepository {
 
   async deleteByChapterId(chapterId) {
     const result = await db.query('DELETE FROM dialogues WHERE chapter_id = $1', [chapterId]);
+    return result.rowCount;
+  }
+
+  async deleteByChapterIdExceptIds(chapterId, keepIds) {
+    const ids = (keepIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    let query;
+    let values;
+    if (ids.length === 0) {
+      query = 'DELETE FROM dialogues WHERE chapter_id = $1';
+      values = [chapterId];
+    } else {
+      const placeholders = ids.map((_, index) => `$${index + 2}`).join(', ');
+      query = `DELETE FROM dialogues WHERE chapter_id = $1 AND id NOT IN (${placeholders})`;
+      values = [chapterId, ...ids];
+    }
+    const result = await db.query(query, values);
     return result.rowCount;
   }
 
@@ -890,6 +938,29 @@ class JobRepository {
     return this.findById(id);
   }
 
+  /**
+   * Write a status/progress patch only while the job has not been cancelled.
+   * The condition lives in the SQL so an in-flight progress/terminal update
+   * that already left the client still cannot overwrite a CANCELLED state that
+   * lands in the database while the update is on the wire; returns the final
+   * state (the caller's patch is silently ignored when cancellation won).
+   */
+  async updateUnlessCancelled(id, updates) {
+    const normalized = { ...updates };
+    if (normalized.result !== undefined && normalized.result !== null && typeof normalized.result !== 'string') {
+      normalized.result = JSON.stringify(normalized.result);
+    }
+    const { fields, values } = buildUpdate(normalized, ['status', 'progress', 'result', 'error']);
+    if (fields.length === 0) return this.findById(id);
+    fields.push('updated_at = NOW()');
+    values.push(id);
+    await db.query(
+      `UPDATE jobs SET ${fields.join(', ')} WHERE id = $${values.length} AND status <> 'CANCELLED'`,
+      values
+    );
+    return this.findById(id);
+  }
+
   async findAll(filters = {}) {
     const conditions = [];
     const values = [];
@@ -1117,7 +1188,11 @@ class AiConfigRepository {
   }
 
   async findAll() {
-    return db.many('SELECT * FROM ai_configs ORDER BY is_active DESC, updated_at DESC, id DESC');
+    return db.many(`
+      SELECT id, name, api_url, api_key <> '' AS has_api_key, model, is_reasoning, is_active, created_at, updated_at
+      FROM ai_configs
+      ORDER BY is_active DESC, updated_at DESC, id DESC
+    `);
   }
 
   async delete(id) {
@@ -1208,7 +1283,11 @@ class TtsConfigRepository {
   }
 
   async findAll() {
-    return db.many('SELECT * FROM tts_configs ORDER BY provider ASC, is_active DESC, updated_at DESC, id DESC');
+    return db.many(`
+      SELECT id, name, provider, api_url, api_key <> '' AS has_api_key, model, is_active, created_at, updated_at
+      FROM tts_configs
+      ORDER BY provider ASC, is_active DESC, updated_at DESC, id DESC
+    `);
   }
 
   async findByProvider(provider) {
@@ -1241,7 +1320,131 @@ class TtsConfigRepository {
   }
 }
 
+class BookCharacterProfileRepository {
+  async findByBookId(bookId) {
+    return db.many(`
+      SELECT *
+      FROM book_character_profiles
+      WHERE book_id = $1
+      ORDER BY canonical_name ASC
+    `, [bookId]);
+  }
+
+  async findByName(bookId, canonicalName) {
+    return db.one(`
+      SELECT *
+      FROM book_character_profiles
+      WHERE book_id = $1 AND canonical_name = $2
+    `, [bookId, canonicalName]);
+  }
+
+  async findById(profileId) {
+    return db.one('SELECT * FROM book_character_profiles WHERE id = $1', [profileId]);
+  }
+
+  async ensure(bookId, canonicalName, firstChapterId = null) {
+    const row = await db.one(`
+      INSERT INTO book_character_profiles (book_id, canonical_name, first_chapter_id)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (book_id, canonical_name) DO NOTHING
+      RETURNING id
+    `, [bookId, canonicalName, firstChapterId]);
+    if (row) return row.id;
+    const existing = await db.one('SELECT id FROM book_character_profiles WHERE book_id = $1 AND canonical_name = $2', [bookId, canonicalName]);
+    return existing?.id ?? null;
+  }
+
+  async delete(profileId) {
+    const result = await db.query('DELETE FROM book_character_profiles WHERE id = $1', [profileId]);
+    return result.rowCount > 0;
+  }
+}
+
+class BookCharacterAliasRepository {
+  async findByBookId(bookId) {
+    return db.many(`
+      SELECT a.*, p.canonical_name
+      FROM book_character_aliases a
+      JOIN book_character_profiles p ON p.id = a.profile_id
+      WHERE a.book_id = $1
+      ORDER BY a.alias ASC
+    `, [bookId]);
+  }
+
+  async findByProfileId(profileId) {
+    return db.many('SELECT * FROM book_character_aliases WHERE profile_id = $1 ORDER BY alias ASC', [profileId]);
+  }
+
+  async findById(aliasId) {
+    return db.one('SELECT * FROM book_character_aliases WHERE id = $1', [aliasId]);
+  }
+
+  async create(profileId, bookId, alias) {
+    const row = await db.one(`
+      INSERT INTO book_character_aliases (profile_id, book_id, alias)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (book_id, alias) DO NOTHING
+      RETURNING id
+    `, [profileId, bookId, alias]);
+    return row ? row.id : null;
+  }
+
+  async delete(aliasId) {
+    const result = await db.query('DELETE FROM book_character_aliases WHERE id = $1', [aliasId]);
+    return result.rowCount > 0;
+  }
+}
+
+class PronunciationRuleRepository {
+  async findByBookId(bookId) {
+    return db.many(`
+      SELECT *
+      FROM pronunciation_rules
+      WHERE book_id = $1
+      ORDER BY priority DESC, LENGTH(match_text) DESC, id ASC
+    `, [bookId]);
+  }
+
+  async findById(ruleId) {
+    return db.one('SELECT * FROM pronunciation_rules WHERE id = $1', [ruleId]);
+  }
+
+  async create(rule) {
+    const row = await db.one(`
+      INSERT INTO pronunciation_rules (book_id, profile_id, rule_type, match_text, replacement, priority, enabled)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id
+    `, [
+      rule.book_id,
+      rule.profile_id ?? null,
+      rule.rule_type || 'alias',
+      rule.match_text,
+      rule.replacement || '',
+      rule.priority ?? 0,
+      rule.enabled !== false
+    ]);
+    return row.id;
+  }
+
+  async update(ruleId, updates) {
+    const allowed = ['replacement', 'priority', 'enabled', 'profile_id'];
+    const { fields, values } = buildUpdate(updates, allowed);
+    if (fields.length === 0) return false;
+    fields.push('updated_at = NOW()');
+    values.push(ruleId);
+    const result = await db.query(`UPDATE pronunciation_rules SET ${fields.join(', ')} WHERE id = $${values.length}`, values);
+    return result.rowCount > 0;
+  }
+
+  async delete(ruleId) {
+    const result = await db.query('DELETE FROM pronunciation_rules WHERE id = $1', [ruleId]);
+    return result.rowCount > 0;
+  }
+}
+
 module.exports = {
+  BookCharacterProfileRepository,
+  BookCharacterAliasRepository,
   BookCharacterRepository,
   BookRepository,
   ChapterAudioExportRepository,
@@ -1252,6 +1455,7 @@ module.exports = {
   CharacterVoiceBindingRepository,
   DialogueRepository,
   JobRepository,
+  PronunciationRuleRepository,
   ProviderVoiceRepository,
   StorageObjectRepository,
   VoiceFavoriteRepository,

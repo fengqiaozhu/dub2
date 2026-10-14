@@ -7,6 +7,9 @@ const { providerVoiceRepository } = require('../repositories');
 const { jobId, jobName, params } = workerData;
 const { filePath, text } = params;
 
+const registerCancelHandler = require('./cancelSignal');
+const isCancelled = registerCancelHandler();
+
 (async () => {
   try {
     console.log(`[mosiCreateVoiceJob] Start creating voice clone for job ${jobId}`);

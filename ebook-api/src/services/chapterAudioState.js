@@ -34,10 +34,12 @@ function hasSpeakableContent(dialogue) {
 }
 
 function computeDialogueAudioHash(dialogue, route = {}) {
-  return hashObject({
+  const content = normalizeDialogueContent(dialogue.content);
+  const spokenText = route.spokenText != null ? String(route.spokenText) : null;
+  const hashInput = {
     type: dialogue.source === 'narrator' ? 'narration' : 'dialogue',
     character_name: dialogue.character_name,
-    content: normalizeDialogueContent(dialogue.content),
+    content,
     char_start: dialogue.char_start,
     char_end: dialogue.char_end,
     emotion: dialogue.emotion || '',
@@ -48,12 +50,42 @@ function computeDialogueAudioHash(dialogue, route = {}) {
     voice_id: route.voiceId || route.providerVoiceId || route.provider_voice_id,
     voice_profile_id: route.voiceProfileId || route.voice_profile_id,
     intent: route.intent || null
+  };
+  if (spokenText != null && spokenText !== content) {
+    hashInput.spoken_text = spokenText;
+  }
+  return hashObject(hashInput);
+}
+
+function computeChapterExportHash(audioItems, exportProfile = {}) {
+  return hashObject({
+    export_profile: exportProfile.id || null,
+    sentences: audioItems.map((item) => {
+      const dialogue = item.dialogue || item;
+      return {
+        audio_source_hash: dialogue.audio_source_hash,
+        audio_url: dialogue.audio_url,
+        audio_duration: dialogue.audio_duration,
+        order_index: dialogue.order_index
+      };
+    }),
+    format: exportProfile.format || null,
+    bitrate_kbps: exportProfile.bitrateKbps || null,
+    loudness_profile_id: exportProfile.loudnessProfile ? exportProfile.loudnessProfile.id : null
   });
+}
+
+// Shared with the controller: legacy WAV keeps the historical sentence-list
+// hash; MP3 uses the export-identity hash. Must mirror exportChapterAudioJob.
+function computeChapterSourceHash(audioItems, exportProfile = {}) {
+  return exportProfile.format === 'wav'
+    ? computeChapterAudioHash(audioItems)
+    : computeChapterExportHash(audioItems, exportProfile);
 }
 
 function resolveAudioStatus(dialogue, sourceHash) {
   if (dialogue.audio_status === 'failed' && dialogue.audio_error) return 'failed';
-  if (!dialogue.audio_url) return 'missing';
+  if (!keyFromMediaUrl(dialogue.audio_url)) return 'missing';
   if (dialogue.audio_source_hash && sourceHash && dialogue.audio_source_hash === sourceHash) return 'current';
   return 'stale';
 }
@@ -146,6 +178,8 @@ function buildChapterAudioItems(chapter, dialogues, taskMap = new Map(), skipRan
 
 function getChapterAudioItems(dialogues) {
   return dialogues
+    .slice()
+    .sort((a, b) => a.char_start - b.char_start || a.char_end - b.char_end)
     .filter((dialogue) => dialogue.audio_url && dialogue.audio_status !== 'failed')
     .map((dialogue) => {
       const objectKey = keyFromMediaUrl(dialogue.audio_url);
@@ -156,6 +190,16 @@ function getChapterAudioItems(dialogues) {
       };
     })
     .filter((item) => Boolean(item.objectKey));
+}
+
+function getChapterExportReadiness(items) {
+  const included = items.filter((item) => item.audio_status !== 'skipped');
+  const counts = { missing: 0, stale: 0, failed: 0 };
+  for (const item of included) {
+    if (Object.hasOwn(counts, item.audio_status)) counts[item.audio_status] += 1;
+  }
+  const pending = included.filter((item) => item.audio_status !== 'current').length;
+  return { ready: included.length > 0 && pending === 0, total: included.length, pending, ...counts };
 }
 
 function computeChapterAudioHash(audioItems) {
@@ -182,7 +226,10 @@ module.exports = {
   rangesOverlap,
   isAudioSkipped,
   getChapterAudioItems,
+  getChapterExportReadiness,
   computeChapterAudioHash,
+  computeChapterExportHash,
+  computeChapterSourceHash,
   normalizeDialogueContent,
   hasSpeakableContent
 };

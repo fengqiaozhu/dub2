@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue';
-import request from '@/api/request';
+import request, { authHeaders } from '@/api/request';
 
 interface Message {
   id: string;
@@ -305,7 +305,8 @@ const sendMessage = async () => {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...authHeaders()
       },
       body: JSON.stringify({ messages: requestMessages }),
       signal: abortController.value.signal

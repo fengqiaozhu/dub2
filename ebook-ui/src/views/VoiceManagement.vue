@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import request, { toMediaUrl } from '@/api/request';
+import request, { toMediaUrl, UPLOAD_TIMEOUT } from '@/api/request';
 import AudioTrack from '@/components/common/AudioTrack.vue';
 import { fetchTtsVoicePage, fetchVoiceProfilePage } from '@/api/voices';
 
@@ -930,6 +930,7 @@ const submitUpload = async () => {
 
     await request.post('/tts/voice-profiles', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: UPLOAD_TIMEOUT,
     });
     closeUpload();
     await refreshAll();

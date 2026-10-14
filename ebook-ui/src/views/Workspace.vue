@@ -8,7 +8,7 @@ import DialogueView from '@/components/workspace/DialogueView.vue';
 import BookVoiceBinding from '@/components/workspace/BookVoiceBinding.vue';
 import RoleVoiceMapping from '@/components/workspace/RoleVoiceMapping.vue';
 import AudioTrack from '@/components/common/AudioTrack.vue';
-import request, { toMediaUrl } from '@/api/request';
+import request, { toMediaUrl, authHeaders, ANALYSIS_TIMEOUT } from '@/api/request';
 
 const route = useRoute();
 const router = useRouter();
@@ -48,6 +48,8 @@ const isChapterAnalyzed = computed(() => {
   return Array.isArray(characters) && characters.some((character: any) => character.character_name !== '旁白');
 });
 const dubbingStats = computed(() => chapterContent.value?.dubbing_stats || { total: 0, completed: 0, pending: 0 });
+const canMergeAudio = computed(() => chapterContent.value?.export_readiness?.ready === true);
+const mergeDisabledReason = computed(() => canMergeAudio.value ? '' : '请先完成待配音句，或明确跳过；空章节无法拼接');
 const mergedAudioExport = computed(() => chapterContent.value?.merged_audio_export || null);
 const mergedAudioUrl = computed(() => {
   if (!mergedAudioExport.value?.audio_url) return '';
@@ -57,7 +59,7 @@ const hasCurrentMergedAudio = computed(() => !!mergedAudioExport.value?.audio_ur
 
 const dubbingAction = computed(() => {
   const stats = dubbingStats.value;
-  if (stats.total > 0 && stats.completed >= stats.total) {
+  if (stats.total > 0 && stats.pending === 0 && stats.completed > 0) {
     return {
       mode: 'redub',
       label: '重新配音',
@@ -149,7 +151,9 @@ const getMissingVoiceRoles = () => {
 
 const fetchDubbingPreview = async () => {
   if (!workspaceStore.activeChapterId) return null;
-  const res = await request.get(`/chapters/${workspaceStore.activeChapterId}/dubbing-preview`);
+  const res = await request.get(`/chapters/${workspaceStore.activeChapterId}/dubbing-preview`, {
+    timeout: ANALYSIS_TIMEOUT,
+  });
   return res.data;
 };
 
@@ -191,6 +195,9 @@ const pollDubbingJob = (jobId: string, bookId: string, chapterId: number) => {
       workspaceStore.setTabWorkspaceJob(bookId, 'dubbing', null);
       console.error('Dubbing failed', error);
       showWarning('批量配音失败', '请检查音色绑定和后端任务日志。');
+    },
+    () => {
+      workspaceStore.setTabWorkspaceJob(bookId, 'dubbing', null);
     }
   );
 };
@@ -206,6 +213,9 @@ const pollAnalysisJob = (jobId: string, bookId: string, chapterId: number) => {
     (error: any) => {
       workspaceStore.setTabWorkspaceJob(bookId, 'analysis', null);
       console.error('Analysis failed', error);
+    },
+    () => {
+      workspaceStore.setTabWorkspaceJob(bookId, 'analysis', null);
     }
   );
 };
@@ -221,8 +231,35 @@ const pollExportJob = (jobId: string, bookId: string, chapterId: number) => {
       workspaceStore.setTabWorkspaceJob(bookId, 'export', null);
       console.error('Merged export failed', error);
       showWarning('拼接导出失败', '请确认本章已有可用音频。');
+    },
+    () => {
+      workspaceStore.setTabWorkspaceJob(bookId, 'export', null);
     }
   );
+};
+
+const stopDubbing = async () => {
+  const jobId = workspaceStore.dubbingJobId;
+  const bookId = workspaceStore.activeBookId;
+  if (!jobId) return;
+  const { cleared, notice } = await jobStore.cancelJob(jobId);
+  if (!cleared) {
+    showWarning('停止配音失败', notice || '请稍后重试。');
+    return;
+  }
+  if (bookId) workspaceStore.setTabWorkspaceJob(bookId, 'dubbing', null);
+};
+
+const stopExport = async () => {
+  const jobId = workspaceStore.exportJobId;
+  const bookId = workspaceStore.activeBookId;
+  if (!jobId) return;
+  const { cleared, notice } = await jobStore.cancelJob(jobId);
+  if (!cleared) {
+    showWarning('停止拼接失败', notice || '请稍后重试。');
+    return;
+  }
+  if (bookId) workspaceStore.setTabWorkspaceJob(bookId, 'export', null);
 };
 
 const resumeActiveTabJobs = () => {
@@ -408,7 +445,7 @@ const readErrorMessage = async (response: Response) => {
 const downloadChapterAudioArchive = async () => {
   if (!workspaceStore.activeChapterId) return;
   try {
-    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/export-audio`);
+    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/export-audio`, { headers: authHeaders() });
     if (!response.ok) {
       showWarning('单句导出失败', await readErrorMessage(response));
       return;
@@ -424,7 +461,7 @@ const downloadChapterAudioArchive = async () => {
 const downloadStorySourcePackage = async () => {
   if (!workspaceStore.activeChapterId) return;
   try {
-    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/story-source-package`);
+    const response = await fetch(`/api/chapters/${workspaceStore.activeChapterId}/story-source-package`, { headers: authHeaders() });
     if (!response.ok) {
       showWarning('故事源包导出失败', await readErrorMessage(response));
       return;
@@ -569,7 +606,7 @@ const exportMergedChapterAudio = async () => {
       <div class="export-settings">
         <button class="btn btn-outline" :disabled="!workspaceStore.activeChapterId" @click="downloadStorySourcePackage">导出故事源包</button>
         <button class="btn btn-outline" :disabled="!workspaceStore.activeChapterId" @click="exportChapterAudio">导出本章单句</button>
-        <button class="btn btn-outline" :disabled="isExporting || !workspaceStore.activeChapterId" @click="exportMergedChapterAudio">
+        <button class="btn btn-outline" :disabled="isExporting || !workspaceStore.activeChapterId || !canMergeAudio" :title="mergeDisabledReason" @click="exportMergedChapterAudio">
           {{ mergeActionLabel }}
         </button>
       </div>
@@ -581,6 +618,7 @@ const exportMergedChapterAudio = async () => {
           <span class="audio-state mono-text success" v-else-if="hasCurrentMergedAudio">已生成</span>
           <span class="audio-state mono-text warning" v-else-if="mergedAudioExport">音轨已过期</span>
           <span class="audio-state mono-text" v-else>尚未拼接</span>
+          <button v-if="isExporting" class="btn btn-outline btn-sm" type="button" @click="stopExport">停止拼接</button>
         </div>
         <AudioTrack
           v-if="mergedAudioUrl"
@@ -607,10 +645,13 @@ const exportMergedChapterAudio = async () => {
 
       <div class="start-action" v-if="isChapterAnalyzed">
         <!-- 正在配音中 -->
-        <button v-if="isDubbing" class="btn btn-primary btn-large" disabled>
-          <span class="spinner-small"></span>
-          配音中... {{ dubbingJob?.progress || 0 }}%
-        </button>
+        <div v-if="isDubbing" class="dub-action-group">
+          <button class="btn btn-primary btn-large" disabled>
+            <span class="spinner-small"></span>
+            配音中... {{ dubbingJob?.progress || 0 }}%
+          </button>
+          <button class="btn btn-outline btn-large" @click="stopDubbing">停止配音</button>
+        </div>
         
         <!-- 未开始配音 -->
         <button v-else-if="dubbingStats.completed === 0" class="btn btn-primary btn-large" @click="startDubbing(false)" :disabled="!workspaceStore.activeChapterId">
